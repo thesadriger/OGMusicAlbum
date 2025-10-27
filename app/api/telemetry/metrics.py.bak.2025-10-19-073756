@@ -1,0 +1,28 @@
+from __future__ import annotations
+from prometheus_client import Counter, Gauge, Histogram, REGISTRY
+
+def _get_or_create(metric_cls, name, documentation, labelnames=(), **kwargs):
+    # Idempotent metric factory: если метрика уже зарегистрирована в REGISTRY,
+    # вернём существующий инстанс вместо падения ValueError (дубликат).
+    try:
+        if 'registry' not in kwargs:
+            kwargs['registry'] = REGISTRY
+        return metric_cls(name, documentation, labelnames, **kwargs)
+    except ValueError:
+        # В реестре уже есть метрика с таким именем — вернём её.
+        return REGISTRY._names_to_collectors[name]
+
+# App usage
+VISITS_TOTAL         = _get_or_create(Counter, "ogma_visits",         "App visits (frontend beacon)", ["source", "user"])
+SEARCH_TOTAL         = _get_or_create(Counter, "ogma_search",         "Search requests",              ["user"])
+STREAM_START_TOTAL   = _get_or_create(Counter, "ogma_stream_start",   "Stream starts",                ["chat", "partial", "mime"])
+STREAM_BYTES_TOTAL   = _get_or_create(Counter, "ogma_stream_bytes",   "Total streamed bytes",         ["chat"])
+DOWNLOAD_START_TOTAL = _get_or_create(Counter, "ogma_download_start", "Download starts",              ["chat", "mime"])
+ERRORS_TOTAL         = _get_or_create(Counter, "ogma_errors",         "Unhandled errors by endpoint", ["endpoint"])
+
+# Latency histogram
+REQUEST_LATENCY      = _get_or_create(Histogram, "ogma_custom_request_seconds", "Custom handler latency", ["path"])
+
+# Telegram gateway specific
+TG_FLOODWAITS_TOTAL  = _get_or_create(Counter, "ogma_tg_floodwait",  "Telethon FloodWait occurrences", ["op"])
+TG_RPC_ERRORS_TOTAL  = _get_or_create(Counter, "ogma_tg_rpc_errors", "Telethon RPC errors",            ["op"])

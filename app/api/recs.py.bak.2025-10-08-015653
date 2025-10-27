@@ -1,0 +1,12 @@
+from fastapi import APIRouter, Depends, Query
+from app.api.users import _current_user_id
+
+router = APIRouter()
+
+@router.get("/me/recs")
+async def me_recs(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user_id: int = Depends(_current_user_id),
+):
+    return {"ok": True, "user_id": user_id, "limit": limit, "offset": offset}

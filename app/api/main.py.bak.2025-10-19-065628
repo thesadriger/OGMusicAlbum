@@ -1,0 +1,567 @@
+from __future__ import annotations
+from app.observability.metrics import PromHTTPMiddleware, metrics_app
+# /home/ogma/ogma/app/api/main.py
+from app.api.search import router as search_router
+
+import os
+import json
+from contextlib import asynccontextmanager, suppress
+from typing import List, Optional, Any, Dict
+
+import asyncpg
+import httpx
+from fastapi import FastAPI, Query, HTTPException, Request, APIRouter
+import time
+import logging
+from app.api.telegram_logger import TelegramHandler
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from httpx import HTTPStatusError, RequestError
+
+from app.api import me_send as _me_send
+from app.api.auth_webapp import router as auth_router
+from app.api.users import router as users_router
+from app.api.stream_gateway import router as stream_router, close_tg as _close_tg
+from app.api import catalog_artists as _catalog_artists
+from app.api import listen as _listen
+from app.api.playlists import router as playlists_router
+
+from prometheus_fastapi_instrumentator import Instrumentator
+from app.api.telemetry.live_monitor import start_live_monitors, stop_live_monitors
+from app.api.telemetry.console_logs import start_console_logs, stop_console_logs
+from app.api.telemetry.topics_admin import router as topics_admin_router
+
+try:
+    from app.api.telemetry.cache_shipper import start_cache_shipper, stop_cache_shipper
+except Exception:
+
+    async def start_cache_shipper(app):
+        pass
+
+    async def stop_cache_shipper(app):
+        pass
+
+
+from app.api.telemetry.telegram_topics import TelegramForumManager
+from app.api.telemetry.eventlog import EventLog
+from app.api.telemetry.log_shipper import start_log_shipper, stop_log_shipper
+from app.api.telemetry.metrics import (
+    VISITS_TOTAL,
+    SEARCH_TOTAL,
+    STREAM_START_TOTAL,
+    STREAM_BYTES_TOTAL,
+    DOWNLOAD_START_TOTAL,
+    ERRORS_TOTAL,
+    REQUEST_LATENCY,
+)
+
+PG_DSN = os.environ["PG_DSN"]
+MEILI_HOST = (os.environ.get("MEILI_HOST") or "http://127.0.0.1:7700").rstrip("/")
+MEILI_KEY = os.environ.get("MEILI_KEY") or os.environ.get("MEILI_MASTER_KEY") or ""
+
+
+async def _search_pg_fallback(
+    q: str,
+    limit: int,
+    offset: int,
+    artist: List[str] | None,
+    hashtag: List[str] | None,
+    chat: List[str] | None,
+    sort: str | None,
+) -> Dict[str, Any]:
+    # Собираем SQL динамически, чтобы не городить лишних условий.
+    conds: List[str] = []
+    args: List[Any] = []
+    i = 1
+
+    if q:
+        conds.append(
+            f"""(
+            coalesce(title,'') || ' ' ||
+            coalesce(array_to_string(artists,' '),'') || ' ' ||
+            coalesce(array_to_string(hashtags,' '),'')
+        ) ilike '%' || ${i} || '%'"""
+        )
+        args.append(q)
+        i += 1
+
+    if artist:
+        conds.append(f"artists && ${i}::text[]")
+        args.append(artist)
+        i += 1
+
+    if hashtag:
+        tags = [h if h.startswith("#") else f"#{h}" for h in hashtag]
+        conds.append(f"hashtags && ${i}::text[]")
+        args.append(tags)
+        i += 1
+
+    if chat:
+        conds.append(f"chat_username = ANY(${i}::text[])")
+        args.append(chat)
+        i += 1
+
+    where_sql = " AND ".join(conds) if conds else "TRUE"
+
+    # сортировка: только разрешённые поля
+    sort_field, sort_dir = "created_at", "desc"
+    if sort:
+        field, *rest = sort.split(":")
+        direction = (rest[0] if rest else "desc").lower()
+        if field in {"created_at", "duration_s"} and direction in {"asc", "desc"}:
+            sort_field, sort_dir = field, direction
+
+    sql = f"""
+      SELECT id::text                 AS id,
+             tg_msg_id                AS "msgId",
+             chat_username            AS chat,
+             title, artists, hashtags,
+             duration_s               AS duration,
+             mime, size_bytes, created_at
+        FROM tracks
+       WHERE {where_sql}
+       ORDER BY {sort_field} {sort_dir} NULLS LAST
+       LIMIT ${i} OFFSET ${i+1}
+    """
+    args.extend([limit, offset])
+
+    items: List[Dict[str, Any]] = []
+    async with app.state.pool.acquire() as con:
+        rows = await con.fetch(sql, *args)
+        for r in rows:
+            items.append(dict(r))
+
+    return {
+        "hits": items,
+        "limit": limit,
+        "offset": offset,
+        "total": None,
+        "query": q,
+    }
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    tg_handler = None
+    tg_forum: TelegramForumManager | None = None
+    eventlog: EventLog | None = None
+
+    async def _init_conn(con: asyncpg.Connection):
+        # Возвращаем json/jsonb как Python-объекты
+        await con.set_type_codec(
+            "json",
+            schema="pg_catalog",
+            encoder=json.dumps,
+            decoder=json.loads,
+            format="text",
+        )
+        await con.set_type_codec(
+            "jsonb",
+            schema="pg_catalog",
+            encoder=json.dumps,
+            decoder=json.loads,
+            format="text",
+        )
+        await con.execute("SET statement_timeout = '5s'")
+
+    pool = await asyncpg.create_pool(
+        PG_DSN,
+        min_size=1,
+        max_size=10,
+        init=_init_conn,
+        timeout=5.0,
+        command_timeout=5.0,
+    )
+    app.state.pool = pool
+
+    headers = {"Authorization": f"Bearer {MEILI_KEY}"} if MEILI_KEY else {}
+    meili = httpx.AsyncClient(base_url=MEILI_HOST, headers=headers, timeout=10.0)
+    app.state.meili = meili
+    # Telegram-логирование WARN/ERROR
+    TELEGRAM_LOG_BOT_TOKEN = os.environ.get("TELEGRAM_LOG_BOT_TOKEN")
+    TELEGRAM_LOG_CHAT_ID = os.environ.get("TELEGRAM_LOG_CHAT_ID")
+    if TELEGRAM_LOG_BOT_TOKEN and TELEGRAM_LOG_CHAT_ID:
+        tg_handler = TelegramHandler(
+            TELEGRAM_LOG_BOT_TOKEN,
+            TELEGRAM_LOG_CHAT_ID,
+            level=logging.WARNING,
+            batch_secs=1.0,
+            max_batch=8,
+        )
+        fmt = logging.Formatter(
+            "[%(levelname)s] %(asctime)s %(name)s\n%(message)s\n(%(pathname)s:%(lineno)d)"
+        )
+        tg_handler.setFormatter(fmt)
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        root.addHandler(tg_handler)
+        # пусть uvicorn/httpx/telethon пробрасывают в корень
+        for name in ("uvicorn.error", "uvicorn.access", "httpx", "telethon"):
+            logging.getLogger(name).propagate = True
+        await tg_handler.start()
+
+        # --- Менеджер тем и event-лог по действиям пользователя ---
+        if TELEGRAM_LOG_BOT_TOKEN and TELEGRAM_LOG_CHAT_ID:
+            tg_forum = TelegramForumManager(
+                TELEGRAM_LOG_BOT_TOKEN,
+                TELEGRAM_LOG_CHAT_ID,
+                state_path=os.environ.get("TELEGRAM_TOPICS_STATE"),
+            )
+            try:
+                await tg_forum.ensure_topics(
+                    [
+                        "visits",
+                        "search",
+                        "stream",
+                        "download",
+                        "errors",
+                        "db",
+                        "tg-gateway",
+                    ]
+                )
+            except Exception:
+                pass
+            eventlog = EventLog(tg_forum)
+        app.state.tg_forum = tg_forum
+        app.state.eventlog = eventlog
+    try:
+        # 👇 запускаем фоновые лайв-мониторы (инфра-дашборд + при желании — агрегаты приложения)
+        await start_live_monitors(app)
+        # 🔔 лог-shipper: каждую ошибку отдельным сообщением
+        with suppress(Exception):
+            await start_log_shipper(app)
+        await start_console_logs(app)
+        await start_cache_shipper(app)
+        yield
+    finally:
+        # 👇 корректно останавливаем фоновые задачи
+        with suppress(Exception):
+            await stop_live_monitors(app)
+        # ⛔ останов лог-shipper
+        with suppress(Exception):
+            await stop_log_shipper(app)
+        with suppress(Exception):
+            await stop_console_logs(app)
+
+        with suppress(Exception):
+            await stop_cache_shipper(app)
+
+        if tg_handler:
+            logging.getLogger().removeHandler(tg_handler)
+            with suppress(Exception):
+                await tg_handler.stop()
+
+        await meili.aclose()
+        await pool.close()
+        await _close_tg()
+
+
+app = FastAPI(title="OGMA Search API", version="1.0", lifespan=lifespan)
+
+
+
+
+app.mount("/metrics", metrics_app)
+app.add_middleware(PromHTTPMiddleware)
+app.mount("/", metrics_app)  # /metrics here
+
+# ── CORS: без '*' при credentials; список из ENV иначе dev-дефолт ─────────────
+_allow_origins = [
+    o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()
+]
+if not _allow_origins:
+    # дефолт для локалки (vite): можно расширить при необходимости
+    _allow_origins = ["http://localhost:5190", "http://127.0.0.1:5190"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allow_origins,
+    allow_credentials=True,  # у вас fetch с credentials: "include"
+    allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "*"
+    ],  # ваши кастомные заголовки (X-Telegram-Init-Data, Range, If-Range и т.д.)
+    # чтобы фронт видел ключевые заголовки стрима (полезно для плееров и дебага)
+    expose_headers=[
+        "Accept-Ranges",
+        "Content-Range",
+        "Content-Length",
+        "Content-Encoding",
+    ],
+)
+
+
+# Ловим необработанные ошибки и отправляем в логи
+@app.middleware("http")
+async def _errors_to_log(request: Request, call_next):
+    start = time.perf_counter()
+    try:
+        resp = await call_next(request)
+        return resp
+    except Exception:
+        logging.getLogger("app").exception(
+            "Unhandled error on %s %s", request.method, request.url.path
+        )
+        # метрика + сообщение в тему "errors"
+        try:
+            ERRORS_TOTAL.labels(endpoint=str(request.url.path)).inc()
+            ev = getattr(app.state, "eventlog", None)
+            if ev:
+                await ev.send(
+                    "errors",
+                    f"<b>Unhandled</b> {request.method} <code>{request.url.path}</code>",
+                )
+        finally:
+            pass
+        raise
+    finally:
+        # latency гистограмма
+        try:
+            REQUEST_LATENCY.labels(path=str(request.url.path)).observe(
+                time.perf_counter() - start
+            )
+        except Exception:
+            pass
+
+
+# Экспозиция метрик Prometheus (локально на 127.0.0.1:8080/metrics)
+Instrumentator().instrument(app).expose(
+    app, endpoint="/metrics", include_in_schema=False
+)
+
+# Роутеры
+app.include_router(topics_admin_router, prefix="/internal", include_in_schema=False)
+app.include_router(auth_router, prefix="/api")
+app.include_router(search_router, prefix="/api")
+app.include_router(users_router, prefix="/api")
+app.include_router(stream_router, prefix="/api")
+app.include_router(_listen.router, prefix="/api")
+app.include_router(_catalog_artists.router, prefix="/api")
+app.include_router(_me_send.router, prefix="/api")
+app.include_router(playlists_router, prefix="/api")
+app.include_router(search_router, prefix="/api")
+
+logger = logging.getLogger("app")
+
+# ---- helper: user id из Telegram WebApp (если есть подпись) ----
+try:
+    from app.api.users import _verify_webapp_init_data  # type: ignore
+except Exception:
+
+    def _verify_webapp_init_data(_: str):
+        return {}
+
+
+def _maybe_user_id_from_request(req: Request) -> str:
+    init_data = req.headers.get("x-telegram-init-data")
+    if init_data:
+        try:
+            u = _verify_webapp_init_data(init_data)
+            return str(u.get("id") or "anon")
+        except Exception:
+            return "anon"
+    x = req.headers.get("x-debug-user-id")
+    return x if x else "anon"
+
+
+# ---- Telemetry: визит SPA ----
+telemetry_router = APIRouter()
+
+
+@telemetry_router.post("/api/telemetry/visit")
+async def telemetry_visit(request: Request, source: str = Query(default="webapp")):
+    user = _maybe_user_id_from_request(request)
+    VISITS_TOTAL.labels(source=source, user=user).inc()
+    ev = getattr(app.state, "eventlog", None)
+    if ev:
+        ua = request.headers.get("user-agent", "")
+        ref = request.headers.get("referer", "")
+        await ev.send(
+            "visits",
+            f"👋 <b>visit</b> user=<code>{user}</code>\nUA: <code>{ua}</code>\nRef: <code>{ref}</code>",
+        )
+    return {"ok": True}
+
+
+app.include_router(telemetry_router)
+
+
+@app.get("/api/_warn")
+async def _warn():
+    logger.warning("Manual WARN test from /api/_warn")
+    return {"ok": True}
+
+
+@app.get("/api/_boom")
+def _boom():
+    # Специально кидаем необработанную ошибку → попадёт в TelegramHandler
+    raise RuntimeError("Manual ERROR test from /api/_boom")
+
+
+# ---- Модели/утилиты ----
+
+
+class Track(BaseModel):
+    id: str
+    msgId: int
+    chat: str
+    title: Optional[str] = None
+    artists: List[str] = []
+    hashtags: List[str] = []
+    duration: Optional[int] = None
+    mime: Optional[str] = None
+
+
+def _coerce_doc_for_api(d: dict) -> dict:
+    chat_username = d.get("chat_username") or d.get("chat") or ""
+    raw_msg_id = (
+        d.get("tg_msg_id") if d.get("tg_msg_id") is not None else d.get("msgId")
+    )
+    try:
+        msg_id = int(raw_msg_id) if raw_msg_id is not None else 0
+    except Exception:
+        msg_id = 0
+    return {
+        "id": d.get("id"),
+        "title": d.get("title"),
+        "artists": d.get("artists") or [],
+        "hashtags": d.get("hashtags") or [],
+        "duration": d.get("duration_s"),
+        "mime": d.get("mime"),
+        "size_bytes": d.get("size_bytes"),
+        "created_at": d.get("created_at") or "",
+        "chat": chat_username,
+        "msgId": msg_id,
+    }
+
+
+# ---- Служебные эндпоинты ----
+
+
+@app.get("/api/health")
+async def health():
+    try:
+        async with app.state.pool.acquire() as con:
+            v = await con.fetchval("select 1;")
+            pg_ok = v == 1
+    except Exception:
+        pg_ok = False
+
+    try:
+        r = await app.state.meili.get("/health")
+        meili_ok = r.status_code == 200 and (
+            r.json().get("status") in {"available", "running", "ok"}
+        )
+    except Exception:
+        meili_ok = False
+
+    return {"postgres": pg_ok, "meili": meili_ok}
+
+
+# ---- Поиск ----
+
+
+@app.get("/api/search")
+async def search_tracks(
+    q: str = "",
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    artist: List[str] | None = Query(default=None),
+    hashtag: List[str] | None = Query(default=None),
+    chat: List[str] | None = Query(default=None),
+    sort: str | None = Query(default="created_at:desc"),
+    request: Request = None,
+):
+
+    # метрики/событие поиска
+    user = _maybe_user_id_from_request(request) if request else "anon"
+    SEARCH_TOTAL.labels(user=user).inc()
+    ev = getattr(app.state, "eventlog", None)
+    if ev:
+        filters = []
+        if artist:
+            filters.append(f"artist={','.join(artist)}")
+        if hashtag:
+            filters.append(f"hashtag={','.join(hashtag)}")
+        if chat:
+            filters.append(f"chat={','.join(chat)}")
+        ftxt = (" | ".join(filters)) if filters else "no filters"
+        await ev.send(
+            "search",
+            f"🔎 <b>search</b> user=<code>{user}</code>\nq=<code>{q}</code>\n{ftxt}",
+        )
+
+    # --- сначала пробуем Meili ---
+    try:
+        flt_groups: list[list[str]] = []
+        if artist:
+            flt_groups.append([f'artists = "{a}"' for a in artist])
+        if hashtag:
+            norm_tags = [h if h.startswith("#") else f"#{h}" for h in hashtag]
+            flt_groups.append([f'hashtags = "{h}"' for h in norm_tags])
+        if chat:
+            flt_groups.append([f'chat_username = "{c}"' for c in chat])
+
+        body: Dict[str, Any] = {
+            "q": q,
+            "limit": limit,
+            "offset": offset,
+            "attributesToRetrieve": [
+                "id",
+                "title",
+                "artists",
+                "hashtags",
+                "duration_s",
+                "mime",
+                "size_bytes",
+                "created_at",
+                "chat_username",
+                "tg_msg_id",
+                "caption",
+            ],
+            "attributesToHighlight": ["title", "artists", "hashtags", "caption"],
+            "highlightPreTag": "<em>",
+            "highlightPostTag": "</em>",
+        }
+        if flt_groups:
+            body["filter"] = flt_groups
+        if sort:
+            field, *rest = sort.split(":")
+            direction = (rest[0] if rest else "desc").lower()
+            if field not in {"created_at", "duration_s"} or direction not in {
+                "asc",
+                "desc",
+            }:
+                raise HTTPException(
+                    400, "Invalid sort. Use created_at:asc|desc or duration_s:asc|desc"
+                )
+            body["sort"] = [f"{field}:{direction}"]
+
+        r = await app.state.meili.post("/indexes/tracks/search", json=body)
+        r.raise_for_status()
+        data = r.json()
+
+        hits = []
+        for d in data.get("hits", []):
+            doc = _coerce_doc_for_api(d)
+            fmt = d.get("_formatted") or {}
+            if fmt:
+                doc["highlight"] = {
+                    "title": fmt.get("title"),
+                    "artists": fmt.get("artists"),
+                    "hashtags": fmt.get("hashtags"),
+                    "caption": fmt.get("caption"),
+                }
+            hits.append(doc)
+
+        return {
+            "hits": hits,
+            "limit": limit,
+            "offset": offset,
+            "total": data.get("estimatedTotalHits", 0),
+            "query": q,
+        }
+
+    except (HTTPStatusError, RequestError) as e:
+        # 401/403/5xx/сетевые — уходим в PG без падения ручки
+        return await _search_pg_fallback(q, limit, offset, artist, hashtag, chat, sort)

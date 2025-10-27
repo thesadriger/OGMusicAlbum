@@ -1,0 +1,13 @@
+*.deb
+_backups/
+*.tgz
+*.dump
+*.db
+*.session
+*.session-journal
+*.env
+*.env.*
+.vite/
+node_modules/
+dist/
+build/

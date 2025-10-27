@@ -1,0 +1,80 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+type Props = {
+  playing?: boolean;
+  progress?: number;          // 0..1
+  currentSec?: number;
+  totalSec?: number;
+  colors?: [string,string,string,string];
+  borderRadius?: number | string;
+  className?: string;
+};
+
+export default function GradientBackdropFill({
+  playing = false,
+  progress,
+  currentSec,
+  totalSec,
+  colors = ["#4C8BF5", "#6BCB77", "#FFD166", "#EF476F"],
+  borderRadius = "1rem",
+  className = "",
+}: Props) {
+  const [rot, setRot] = useState(0);
+  const raf = useRef<number | null>(null);
+  const last = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!playing) {
+      if (raf.current) cancelAnimationFrame(raf.current);
+      raf.current = null; last.current = null;
+      return;
+    }
+    const loop = (t: number) => {
+      if (last.current == null) last.current = t;
+      const dt = (t - last.current) / 1000;
+      last.current = t;
+      // ~90°/сек — «цветовые точки» меняются по часовой
+      setRot((r) => (r + 90 * dt) % 360);
+      raf.current = requestAnimationFrame(loop);
+    };
+    raf.current = requestAnimationFrame(loop);
+    return () => { if (raf.current) cancelAnimationFrame(raf.current); };
+  }, [playing]);
+
+  const p = useMemo(() => {
+    if (typeof progress === "number") return Math.max(0, Math.min(1, progress));
+    if (typeof currentSec === "number" && typeof totalSec === "number" && totalSec > 0) {
+      return Math.max(0, Math.min(1, currentSec / totalSec));
+    }
+    return 0;
+  }, [progress, currentSec, totalSec]);
+
+  const conic = `conic-gradient(from ${rot}deg at 50% 50%,
+    ${colors[0]} 0deg 90deg,
+    ${colors[1]} 90deg 180deg,
+    ${colors[2]} 180deg 270deg,
+    ${colors[3]} 270deg 360deg)`;
+
+  // контейнер: абсолют под карточкой, растёт по ширине = прогресс
+  const wrap: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    pointerEvents: "none",
+    borderRadius,
+    overflow: "hidden",
+  };
+  const fill: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    width: `${p * 100}%`,
+    transition: "width 250ms linear",
+    background: conic,
+    filter: "saturate(1.1)",
+  };
+
+  return (
+    <div className={className} style={wrap} aria-hidden>
+      <div style={fill} />
+    </div>
+  );
+}

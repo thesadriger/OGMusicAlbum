@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <meta charset="UTF-8" name="color-scheme" content="dark light" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OGMA</title>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- ✅ E2E-заглушки API: включаются ТОЛЬКО если есть ?e2e=1 -->
+  <script>
+    (function () {
+      try {
+        var isE2E = new URL(location.href).searchParams.get('e2e') === '1';
+        if (!isE2E) return;
+
+        // fetch
+        if (window.fetch) {
+          var origFetch = window.fetch.bind(window);
+          window.fetch = function (input, init) {
+            var href = typeof input === 'string' ? input : input.url;
+            if (href && href.includes('/api/')) {
+              var ok = (data, status) => new Response(JSON.stringify(data), {
+                status: status || 200,
+                headers: { 'Content-Type': 'application/json' }
+              });
+              if (href.endsWith('/api/me')) return Promise.resolve(ok({ id: 'e2e', displayName: 'E2E User' }));
+              if (href.includes('/api/playlists')) return Promise.resolve(ok([]));
+              if (href.includes('/api/me/recs')) return Promise.resolve(ok([]));
+              if (href.includes('/api/me/ui-prefs') || href.includes('/api/me/prefs')) return Promise.resolve(ok({}));
+              return Promise.resolve(ok({}, 404));
+            }
+            return origFetch(input, init);
+          };
+        }
+
+        // XMLHttpRequest (актуально для axios)
+        var RealXHR = window.XMLHttpRequest;
+        function respondXHR(xhr, body, status) {
+          var text = (typeof body === 'string') ? body : JSON.stringify(body);
+          xhr.readyState = 4;
+          xhr.status = status || 200;
+          xhr.responseText = text;
+          xhr.response = text;
+          xhr.getAllResponseHeaders = function () { return 'content-type: application/json'; };
+          setTimeout(function () {
+            xhr.onreadystatechange && xhr.onreadystatechange();
+            xhr.onload && xhr.onload();
+          }, 0);
+        }
+        window.XMLHttpRequest = function () {
+          var xhr = new RealXHR();
+          var url = '';
+          var _open = xhr.open;
+          xhr.open = function (method, u) { url = u || ''; return _open.apply(xhr, arguments); };
+          var _send = xhr.send;
+          xhr.send = function (body) {
+            if (url && url.includes('/api/')) {
+              if (url.endsWith('/api/me')) return respondXHR(xhr, { id: 'e2e', displayName: 'E2E User' });
+              if (url.includes('/api/playlists')) return respondXHR(xhr, []);
+              if (url.includes('/api/me/recs')) return respondXHR(xhr, []);
+              if (url.includes('/api/me/ui-prefs') || url.includes('/api/me/prefs')) return respondXHR(xhr, {});
+              return respondXHR(xhr, {}, 404);
+            }
+            return _send.apply(xhr, arguments);
+          };
+          return xhr;
+        };
+      } catch (e) {}
+    })();
+  </script>
+
+  <!-- твой бандл -->
+  <script type="module" src="/src/main.tsx"></script>
+
+  <!-- ✅ уже стоящий у тебя ранний синк темы — оставляем как есть -->
+  <script>
+    (function () {
+      try {
+        var url = new URL(location.href);
+        var qp = (url.searchParams.get('theme') || '').toLowerCase();
+        var ls = localStorage.getItem('ogma_theme');
+        var tg = window.Telegram && window.Telegram.WebApp;
+        var mediaDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var initial = (qp && qp !== 'auto') ? qp : (ls || (tg && tg.colorScheme) || (mediaDark ? 'dark' : 'light'));
+        var isDark = initial === 'dark';
+        document.documentElement.classList.toggle('dark', isDark);
+        document.documentElement.style.backgroundColor = isDark ? '#0b0f1a' : '#f6f7fb';
+        if (tg && tg.onEvent) {
+          tg.onEvent('themeChanged', function () {
+            var scheme = tg.colorScheme === 'dark' ? 'dark' : 'light';
+            var darkNow = scheme === 'dark';
+            document.documentElement.classList.toggle('dark', darkNow);
+            document.documentElement.style.backgroundColor = darkNow ? '#0b0f1a' : '#f6f7fb';
+            window.dispatchEvent(new Event('ogma:theme-changed'));
+          });
+        }
+      } catch (e) { }
+    })();
+  </script>
+</body>
+</html>

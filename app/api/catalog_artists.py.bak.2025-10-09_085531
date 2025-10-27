@@ -1,0 +1,57 @@
+from fastapi import APIRouter, Request, HTTPException, Query
+
+router = APIRouter()
+
+@router.get("/catalog/artists")
+async def catalog_artists(
+    request: Request,
+    limit: int = Query(6, ge=1, le=24),
+    per:   int = Query(3, ge=1, le=10),
+    offset:int = Query(0, ge=0),
+):
+    """
+    Топ артистов по числу треков + до `per` последних треков на артиста.
+    Формат трека совместим с фронтом (id,title,artists,hashtags,mime,size_bytes,created_at,chat,msgId).
+    """
+    pool = getattr(request.app.state, "pool", None)
+    if not pool:
+        raise HTTPException(503, "DB pool not ready")
+
+    sql = """
+    WITH arts AS (
+      SELECT a.artist, COUNT(*) AS cnt
+      FROM tracks t
+      CROSS JOIN LATERAL unnest(t.artists) AS a(artist)
+      GROUP BY a.artist
+      ORDER BY cnt DESC, a.artist ASC
+      OFFSET $1 LIMIT $2
+    )
+    SELECT
+      a.artist,
+      COALESCE((
+        SELECT json_agg(row_to_json(x)) FROM (
+          SELECT
+            t.id::text      AS id,
+            t.title         AS title,
+            t.artists       AS artists,
+            t.hashtags      AS hashtags,
+            t.mime          AS mime,
+            t.size_bytes    AS size_bytes,
+            t.created_at    AS created_at,
+            t.chat_username AS chat,
+            t.tg_msg_id     AS "msgId"
+          FROM tracks t
+          WHERE a.artist = ANY(t.artists)
+          ORDER BY t.created_at DESC
+          LIMIT $3
+        ) x
+      ), []::json) AS tracks
+    FROM arts a
+    ORDER BY a.cnt DESC, a.artist ASC;
+    """
+
+    async with pool.acquire() as con:
+        rows = await con.fetch(sql, offset, limit, per)
+
+    items = [{"artist": r["artist"], "tracks": r["tracks"]} for r in rows]
+    return {"items": items, "limit": limit, "per": per, "offset": offset}

@@ -1,0 +1,458 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import html
+import logging
+from typing import Optional, Tuple, Dict, List
+
+import asyncpg
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes, AIORateLimiter, CallbackQueryHandler
+)
+
+# ------------------------
+# Конфиг / окружение
+# ------------------------
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+PG_DSN = os.environ.get("PG_DSN") or os.environ.get("DATABASE_URL") or \
+         "postgresql://ogma:ogma_pass@127.0.0.1:5432/ogma"
+
+# Пул соединений создадим в application.bot_data["pool"]
+POOL_KEY = "pg_pool"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+log = logging.getLogger("ogma.bot")
+
+# ------------------------
+# Утилиты форматирования
+# ------------------------
+DEFAULT_PERIOD = "7d"
+DEFAULT_LIMIT = 10
+
+PERIOD_LABELS = {
+    "24h": "24 ч",
+    "7d":  "7 д",
+    "30d": "30 д",
+    "all": "всё",
+}
+
+def esc(s: Optional[str]) -> str:
+    return html.escape(s or "")
+
+def parse_args(text: str) -> Tuple[str, int]:
+    """
+    Разбор аргументов команд: /cmd [period] [limit]
+    period: all | 24h | 7d | 30d (по умолчанию 7d)
+    limit: целое 1..50 (по умолчанию 10)
+    """
+    parts = [p for p in (text or "").strip().split() if p]
+    args = parts[1:]
+    period = DEFAULT_PERIOD
+    limit = DEFAULT_LIMIT
+
+    if len(args) >= 1:
+        p = args[0].lower()
+        if p in {"all", "24h", "7d", "30d"}:
+            period = p
+        else:
+            try:
+                limit = max(1, min(50, int(p)))
+            except Exception:
+                pass
+
+    if len(args) >= 2:
+        try:
+            limit = max(1, min(50, int(args[1])))
+        except Exception:
+            pass
+
+    return period, limit
+
+def where_period_sql(period: str) -> str:
+    """
+    Возвращает фрагмент WHERE для таблицы listening_seconds (по колонке day),
+    либо пустую строку для ALL.
+    """
+    if period == "all":
+        return ""
+    if period == "24h":
+        # listening_seconds агрегируется по датам; для ~24h возьмём последние сутки по дате
+        return "AND ls.day >= CURRENT_DATE - 1"
+    if period == "30d":
+        return "AND ls.day >= CURRENT_DATE - 30"
+    # default 7d:
+    return "AND ls.day >= CURRENT_DATE - 7"
+
+def fmt_header(title: str, period: str, limit: int) -> str:
+    p = {"all": "за всё время", "24h": "за 24 часа", "7d": "за 7 дней", "30d": "за 30 дней"}[period]
+    return f"<b>{esc(title)}</b>\n<i>{p}, top {limit}</i>\n"
+
+# ------------------------
+# SQL-запросы
+# ------------------------
+TOP_TRACKS_SQL = """
+SELECT t.id::text AS track_id,
+       t.title,
+       array_to_string(t.artists, ', ') AS artists,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN tracks t ON t.id = ls.track_id
+WHERE 1=1
+  {PERIOD}
+GROUP BY t.id, t.title, t.artists
+ORDER BY seconds_total DESC
+LIMIT $1;
+"""
+
+TOP_ARTISTS_SQL = """
+SELECT a.artist,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN tracks t ON t.id = ls.track_id
+CROSS JOIN LATERAL unnest(t.artists) AS a(artist)
+WHERE 1=1
+  {PERIOD}
+GROUP BY a.artist
+ORDER BY seconds_total DESC
+LIMIT $1;
+"""
+
+TOP_LISTENERS_SQL = """
+SELECT u.telegram_id AS user_id,
+       COALESCE(u.username,'—') AS username,
+       COALESCE(NULLIF(u.name,''),'') AS name,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN users u ON u.telegram_id = ls.user_id
+WHERE 1=1
+  {PERIOD}
+GROUP BY u.telegram_id, u.username, u.name
+ORDER BY seconds_total DESC
+LIMIT $1;
+"""
+
+ME_TRACKS_SQL = """
+SELECT t.id::text AS track_id,
+       t.title,
+       array_to_string(t.artists, ', ') AS artists,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN tracks t ON t.id = ls.track_id
+WHERE ls.user_id = $1
+  {PERIOD}
+GROUP BY t.id, t.title, t.artists
+ORDER BY seconds_total DESC
+LIMIT $2;
+"""
+
+ME_ARTISTS_SQL = """
+SELECT a.artist,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN tracks t ON t.id = ls.track_id
+CROSS JOIN LATERAL unnest(t.artists) AS a(artist)
+WHERE ls.user_id = $1
+  {PERIOD}
+GROUP BY a.artist
+ORDER BY seconds_total DESC
+LIMIT $2;
+"""
+
+# ------------------------
+# Inline keyboard helpers
+# ------------------------
+# act: one of 'top_tracks','top_artists','listeners','me_tracks','me_artists'
+ACTIONS = [
+    ("top_tracks",  "Треки"),
+    ("top_artists", "Артисты"),
+    ("listeners",   "Слушатели"),
+    ("me_tracks",   "Мои треки"),
+    ("me_artists",  "Мои артисты"),
+]
+
+PERIODS = ["24h", "7d", "30d", "all"]
+LIMITS  = [5, 10, 20, 30]
+
+def build_cb(act: str, period: str, limit: int) -> str:
+    # callback_data должен быть коротким (<64 байт), так что без пробелов/юникода
+    return f"a={act};p={period};l={limit}"
+
+def parse_cb(data: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for part in (data or "").split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k] = v
+    return out
+
+def make_kbd(act: str, period: str, limit: int) -> InlineKeyboardMarkup:
+    # Разделим действия на 2 строки, чтобы было не тесно
+    row1 = []
+    row2 = []
+    for i, (code, label) in enumerate(ACTIONS):
+        selected = "•" if code == act else ""
+        btn = InlineKeyboardButton(
+            f"{selected}{label}",
+            callback_data=build_cb(code, period, limit)
+        )
+        (row1 if i < 3 else row2).append(btn)
+
+    # Переключатели периодов
+    row_period = []
+    for p in PERIODS:
+        selected = "•" if p == period else ""
+        row_period.append(
+            InlineKeyboardButton(f"{selected}{PERIOD_LABELS[p]}", callback_data=build_cb(act, p, limit))
+        )
+
+    # Лимиты
+    row_limit = []
+    for l in LIMITS:
+        selected = "•" if l == limit else ""
+        row_limit.append(
+            InlineKeyboardButton(f"{selected}{l}", callback_data=build_cb(act, period, l))
+        )
+
+    return InlineKeyboardMarkup([row1, row2, row_period, row_limit])
+
+# ------------------------
+# Рендеры отчётов (общие)
+# ------------------------
+async def render_top_tracks(pool: asyncpg.Pool, period: str, limit: int) -> str:
+    where = where_period_sql(period)
+    sql = TOP_TRACKS_SQL.format(PERIOD=where)
+    rows = await pool.fetch(sql, limit)
+    if not rows:
+        return "Данных пока нет."
+    out = [fmt_header("Топ треков", period, limit)]
+    for i, r in enumerate(rows, 1):
+        out.append(f"{i}. {esc(r['title'])} — {esc(r['artists'])}  <code>{r['seconds_total']}s</code>")
+    return "\n".join(out)
+
+async def render_top_artists(pool: asyncpg.Pool, period: str, limit: int) -> str:
+    where = where_period_sql(period)
+    sql = TOP_ARTISTS_SQL.format(PERIOD=where)
+    rows = await pool.fetch(sql, limit)
+    if not rows:
+        return "Данных пока нет."
+    out = [fmt_header("Топ артистов", period, limit)]
+    for i, r in enumerate(rows, 1):
+        out.append(f"{i}. {esc(r['artist'])}  <code>{r['seconds_total']}s</code>")
+    return "\n".join(out)
+
+async def render_listeners(pool: asyncpg.Pool, period: str, limit: int) -> str:
+    where = where_period_sql(period)
+    sql = TOP_LISTENERS_SQL.format(PERIOD=where)
+    rows = await pool.fetch(sql, limit)
+    if not rows:
+        return "Данных пока нет."
+    out = [fmt_header("Топ слушателей", period, limit)]
+    for i, r in enumerate(rows, 1):
+        uname = (f"@{r['username']}" if r['username'] and r['username'] != '—' else '—')
+        name = r['name'] or ''
+        out.append(
+            f"{i}. <code>{r['user_id']}</code> {esc(uname)} {esc(name)}  "
+            f"<code>{r['seconds_total']}s</code>"
+        )
+    return "\n".join(out)
+
+async def render_me_tracks(pool: asyncpg.Pool, user_id: int, period: str, limit: int) -> str:
+    where = where_period_sql(period)
+    sql = ME_TRACKS_SQL.format(PERIOD=where)
+    rows = await pool.fetch(sql, user_id, limit)
+    if not rows:
+        return "Для вашего аккаунта ещё нет данных."
+    out = [fmt_header("Ваши треки по секундам", period, limit)]
+    for i, r in enumerate(rows, 1):
+        out.append(f"{i}. {esc(r['title'])} — {esc(r['artists'])}  <code>{r['seconds_total']}s</code>")
+    return "\n".join(out)
+
+async def render_me_artists(pool: asyncpg.Pool, user_id: int, period: str, limit: int) -> str:
+    where = where_period_sql(period)
+    sql = ME_ARTISTS_SQL.format(PERIOD=where)
+    rows = await pool.fetch(sql, user_id, limit)
+    if not rows:
+        return "Для вашего аккаунта ещё нет данных."
+    out = [fmt_header("Ваши артисты по секундам", period, limit)]
+    for i, r in enumerate(rows, 1):
+        out.append(f"{i}. {esc(r['artist'])}  <code>{r['seconds_total']}s</code>")
+    return "\n".join(out)
+
+# ------------------------
+# Хэндлеры команд
+# ------------------------
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    # Экран с инлайн-клавиатурой
+    act = "top_tracks"
+    period = DEFAULT_PERIOD
+    limit = DEFAULT_LIMIT
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+
+    text = await render_top_tracks(pool, period, limit)
+    await update.effective_chat.send_message(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=make_kbd(act, period, limit),
+        disable_web_page_preview=True,
+    )
+
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "<b>OGMA — статистика прослушиваний</b>\n\n"
+        "Жмите на инлайн-кнопки ниже для переключения разделов, периода и лимита.\n\n"
+        "Также доступны команды:\n"
+        "• /me — ваш Telegram ID\n"
+        "• /top_tracks [period] [limit]\n"
+        "• /top_artists [period] [limit]\n"
+        "• /listeners [period] [limit]\n"
+        "• /me_tracks [period] [limit]\n"
+        "• /me_artists [period] [limit]\n\n"
+        "<i>period:</i> all | 24h | 7d | 30d (по умолчанию 7d)\n"
+        "<i>limit:</i> 1..50 (по умолчанию 10)"
+    )
+    await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+async def cmd_me(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    text = f"<b>Ваш Telegram ID:</b> <code>{u.id}</code>\n" \
+           f"<b>username:</b> {esc('@'+u.username) if u.username else '—'}\n" \
+           f"<b>name:</b> {esc(u.full_name)}"
+    await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML)
+
+# Старые слеш-команды оставим — вдруг кому-то привычней
+async def cmd_top_tracks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    period, limit = parse_args(update.message.text)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+    text = await render_top_tracks(pool, period, limit)
+    await update.effective_chat.send_message(
+        text, parse_mode=ParseMode.HTML,
+        reply_markup=make_kbd("top_tracks", period, limit)
+    )
+
+async def cmd_top_artists(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    period, limit = parse_args(update.message.text)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+    text = await render_top_artists(pool, period, limit)
+    await update.effective_chat.send_message(
+        text, parse_mode=ParseMode.HTML,
+        reply_markup=make_kbd("top_artists", period, limit)
+    )
+
+async def cmd_listeners(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    period, limit = parse_args(update.message.text)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+    text = await render_listeners(pool, period, limit)
+    await update.effective_chat.send_message(
+        text, parse_mode=ParseMode.HTML,
+        reply_markup=make_kbd("listeners", period, limit)
+    )
+
+async def cmd_me_tracks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    period, limit = parse_args(update.message.text)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+    text = await render_me_tracks(pool, user_id, period, limit)
+    await update.effective_chat.send_message(
+        text, parse_mode=ParseMode.HTML,
+        reply_markup=make_kbd("me_tracks", period, limit)
+    )
+
+async def cmd_me_artists(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    period, limit = parse_args(update.message.text)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+    text = await render_me_artists(pool, user_id, period, limit)
+    await update.effective_chat.send_message(
+        text, parse_mode=ParseMode.HTML,
+        reply_markup=make_kbd("me_artists", period, limit)
+    )
+
+# ------------------------
+# CallbackQuery (инлайн-кнопки)
+# ------------------------
+async def on_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+
+    data = parse_cb(q.data or "")
+    act = data.get("a") or "top_tracks"
+    period = data.get("p") or DEFAULT_PERIOD
+    try:
+        limit = int(data.get("l") or DEFAULT_LIMIT)
+    except Exception:
+        limit = DEFAULT_LIMIT
+    limit = max(1, min(50, limit))
+
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+
+    if act == "top_tracks":
+        text = await render_top_tracks(pool, period, limit)
+    elif act == "top_artists":
+        text = await render_top_artists(pool, period, limit)
+    elif act == "listeners":
+        text = await render_listeners(pool, period, limit)
+    elif act == "me_tracks":
+        text = await render_me_tracks(pool, q.from_user.id, period, limit)
+    elif act == "me_artists":
+        text = await render_me_artists(pool, q.from_user.id, period, limit)
+    else:
+        text = "Неизвестное действие."
+
+    try:
+        await q.edit_message_text(
+            text=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=make_kbd(act, period, limit),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        # если текст такой же и Telegram не даёт редактировать — просто обновим разметку
+        try:
+            await q.edit_message_reply_markup(reply_markup=make_kbd(act, period, limit))
+        except Exception:
+            pass
+
+# ------------------------
+# Инициализация/запуск
+# ------------------------
+async def on_start(app: Application):
+    app.bot_data[POOL_KEY] = await asyncpg.create_pool(dsn=PG_DSN, min_size=1, max_size=5)
+    log.info("DB pool ready")
+
+async def on_stop(app: Application):
+    pool: asyncpg.Pool = app.bot_data.get(POOL_KEY)
+    if pool:
+        await pool.close()
+
+def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+
+    application = Application.builder() \
+        .token(BOT_TOKEN) \
+        .rate_limiter(AIORateLimiter(max_retries=2)) \
+        .build()
+
+    # Slash-команды (оставляем)
+    application.add_handler(CommandHandler(["start", "help"], cmd_start))
+    application.add_handler(CommandHandler("me", cmd_me))
+    application.add_handler(CommandHandler("top_tracks", cmd_top_tracks))
+    application.add_handler(CommandHandler("top_artists", cmd_top_artists))
+    application.add_handler(CommandHandler("listeners", cmd_listeners))
+    application.add_handler(CommandHandler("me_tracks", cmd_me_tracks))
+    application.add_handler(CommandHandler("me_artists", cmd_me_artists))
+
+    # Инлайн-кнопки
+    application.add_handler(CallbackQueryHandler(on_cb))
+
+    application.post_init = on_start
+    application.post_stop = on_stop
+    application.run_polling(close_loop=False)
+
+if __name__ == "__main__":
+    main()

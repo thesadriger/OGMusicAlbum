@@ -1,0 +1,45 @@
+{
+  "name": "ogma",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -s first -n web,api \"npm:dev:web\" \"npm:dev:api\"",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "dev:web": "vite --port 5190 --strictPort",
+    "dev:api": "bash -lc 'cd /home/ogma/ogma && [ -f stream/.venv/bin/activate ] && source stream/.venv/bin/activate || true; set -a; [ -r /etc/ogma/ogma-api.env ] && . /etc/ogma/ogma-api.env; [ -f app/api/.env ] && . app/api/.env; set +a; uvicorn app.api.main:app --host 127.0.0.1 --port 8080 --reload --log-level debug'"
+  },
+  "dependencies": {
+    "@twa-dev/sdk": "^8.0.2",
+    "axios": "^1.12.2",
+    "classnames": "^2.5.1",
+    "install": "^0.13.0",
+    "npm": "^11.6.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "swr": "^2.3.6",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "@tailwindcss/cli": "^4.1.14",
+    "@tailwindcss/postcss": "^4.1.14",
+    "@types/node": "^24.7.0",
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.36.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.22",
+    "globals": "^16.4.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.14",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.45.0",
+    "vite": "^7.1.7"
+  }
+}

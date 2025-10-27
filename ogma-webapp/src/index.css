@@ -1,0 +1,38 @@
+/* /home/ogma/ogma/ogma-webapp/src/index.css */
+@import "tailwindcss";
+
+/* где сканировать классы Tailwind (v4) */
+@source "./index.html";
+@source "./src/**/*.{ts,tsx}";
+
+/* база */
+@layer base {
+  :root { color-scheme: light dark; }
+  html.dark { color-scheme: dark; }
+
+  /* тёмный базовый фон, чтобы не было белых вспышек до раннего скрипта */
+  html { background: #0b0f1a; }
+
+  body {
+    @apply bg-transparent text-zinc-100;
+  }
+  html:not(.dark) body {
+    @apply text-zinc-900;
+  }
+}
+
+/* тонкий скроллбар в поповере */
+.popover-scroll { scrollbar-width: thin; scrollbar-color: rgba(100,116,139,.45) transparent; }
+.popover-scroll::-webkit-scrollbar { width: 8px; }
+.popover-scroll::-webkit-scrollbar-thumb { background-color: rgba(100,116,139,.45); border-radius: 8px; }
+.popover-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* defaults */
+:root { --ogma-player-h: 72px; }
+
+@layer utilities {
+  .player-safe {
+    padding-bottom: calc(var(--ogma-player-h, 72px) + env(safe-area-inset-bottom));
+    scroll-padding-bottom: calc(var(--ogma-player-h, 72px) + env(safe-area-inset-bottom) + 16px);
+  }
+}

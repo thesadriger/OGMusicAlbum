@@ -1,0 +1,21 @@
+import type { Track } from "@/types";
+
+export function TrackCard({ t, onPlay }: { t: Track; onPlay: (t: Track) => void }) {
+  return (
+    <div className="rounded-2xl p-4 shadow bg-white/70 dark:bg-zinc-900/60 border border-zinc-200/50 dark:border-zinc-800">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-base font-semibold truncate">{t.title}</div>
+          <div className="text-sm text-zinc-500 truncate">{t.artists?.join(", ")}</div>
+          <div className="mt-1 text-xs text-zinc-400 truncate">{t.hashtags?.join(" ")}</div>
+        </div>
+        <button
+          onClick={() => onPlay(t)}
+          className="px-3 py-1.5 rounded-xl bg-black text-white text-sm hover:opacity-90 active:opacity-80"
+        >
+          ▶ play
+        </button>
+      </div>
+    </div>
+  );
+}

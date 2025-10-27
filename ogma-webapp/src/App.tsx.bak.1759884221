@@ -1,0 +1,65 @@
+import { useEffect, useMemo, useState } from "react";
+import { apiGet } from "@/lib/api";
+import type { Track, ApiList } from "@/types";
+import { TrackCard } from "./components/TrackCard";
+import { PlayerBar } from "./components/PlayerBar";
+
+type RecsResp = ApiList<Track>;
+
+export default function App() {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<Track[]>([]);
+  const [now, setNow] = useState<Track | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // простая загрузка рекомендаций по заходу
+  useEffect(() => {
+    let closed = false;
+    setLoading(true);
+    apiGet<RecsResp>("/me/recs?limit=20", { timeoutMs: 20000 })
+      .then((r) => setItems(r.items ?? []))
+      .finally(() => setLoading(false));
+    return () => { closed = true; };
+  }, []);
+
+  // минимальный поиск по Enter (подключим /api/search позже)
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return items;
+    return items.filter(t =>
+      (t.title || "").toLowerCase().includes(s) ||
+      (t.artists || []).join(" ").toLowerCase().includes(s) ||
+      (t.hashtags || []).join(" ").toLowerCase().includes(s)
+    );
+  }, [q, items]);
+
+  return (
+    <div className="min-h-screen pb-28 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
+      <div className="max-w-3xl mx-auto p-4 space-y-4">
+        <h1 className="text-2xl font-bold">@OGMusicAlbum</h1>
+
+        <div className="flex gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Поиск по названию, артистам, хештегам…"
+            className="flex-1 rounded-xl px-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800"
+          />
+          {/* Кнопку «Поиск» подключим к /api/search на следующем шаге */}
+        </div>
+
+        <div className="text-sm text-zinc-500">
+          {loading ? "Загружаем рекомендации…" : `Найдено: ${filtered.length}`}
+        </div>
+
+        <div className="grid gap-3">
+          {filtered.map((t) => (
+            <TrackCard key={t.id} t={t} onPlay={setNow} />
+          ))}
+        </div>
+      </div>
+
+      <PlayerBar now={now} />
+    </div>
+  );
+}

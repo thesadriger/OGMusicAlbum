@@ -1,0 +1,148 @@
+import { useEffect, useState } from "react";
+import { apiGet } from "@/lib/api";
+import type { Track } from "@/types";
+import { TrackCard } from "./components/TrackCard";
+import { PlayerBar } from "./components/PlayerBar";
+import UserAvatar from "@/components/UserAvatar";
+import { AuthGate } from "@/components/AuthGate";
+import { ProfileModal } from "@/components/ProfileModal";
+
+type SearchResp = { hits: Track[]; total?: number };
+type RecsResp = { items: Track[]; limit: number };
+
+// локальная секция рекомендаций
+function RecSection({ recs, onPlay }: { recs: Track[]; onPlay: (t: Track) => void }) {
+  const [open, setOpen] = useState(false);
+  const top = recs.slice(0, 3);
+  const rest = recs.slice(3, 20); // до 20 при раскрытии
+
+  return (
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3 overflow-hidden">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="self-start px-3 py-1.5 rounded-xl bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-sm hover:opacity-90 active:opacity-80"
+        >
+          {open ? "скрыть" : "еще"}
+        </button>
+        <div className="text-sm text-zinc-500">Рекомендации</div>
+      </div>
+
+      <div className="mt-3 space-y-3">
+        {top.map((t) => (
+          <TrackCard key={t.id} t={t} onPlay={onPlay} />
+        ))}
+      </div>
+
+      {open && (
+        <div className="mt-3 border-t border-zinc-200 dark:border-zinc-800 pt-3 space-y-3">
+          {rest.map((t) => (
+            <TrackCard key={t.id} t={t} onPlay={onPlay} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function App() {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<Track[]>([]);          // результаты поиска
+  const [total, setTotal] = useState<number | null>(null);  // всего найдено (от API)
+  const [recs, setRecs] = useState<Track[]>([]);            // рекомендации
+  const [now, setNow] = useState<Track | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  // Telegram WebApp UI
+  useEffect(() => {
+    try {
+      window?.Telegram?.WebApp?.ready?.();
+      window?.Telegram?.WebApp?.expand?.();
+    } catch { /* noop */ }
+  }, []);
+
+  // грузим рекомендации один раз (до 20)
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    apiGet<RecsResp>("/me/recs?limit=20", { timeoutMs: 20000 })
+      .then((r) => { if (!cancelled) setRecs(r.items ?? []); })
+      .catch(() => { if (!cancelled) setRecs([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // поиск (debounce 300ms). Пустая строка — показываем блок рекомендаций
+  useEffect(() => {
+    const s = q.trim();
+    if (!s) { setItems([]); setTotal(null); return; }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      setLoading(true);
+      apiGet<SearchResp>(, { timeoutMs: 20000 })
+        .then((r) => {
+          if (!cancelled) {
+            setItems(r.hits ?? []);
+            setTotal(typeof r.total === "number" ? r.total : null);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) { setItems([]); setTotal(0); }
+        })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q]);
+
+  const s = q.trim();
+
+  const content = (
+    <div className="min-h-screen pb-28 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
+      <div className="max-w-3xl mx-auto p-4 space-y-4">
+        {/* шапка */}
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold">@OGMusicAlbum</h1>
+          <UserAvatar onClick={() => setProfileOpen(true)} />
+        </div>
+
+        <div className="flex gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Поиск по названию, артистам, хештегам…"
+            className="flex-1 rounded-xl px-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800"
+          />
+        </div>
+
+        <div className="text-sm text-zinc-500">
+          {loading ? "Загружаем…" : (s ?  : null)}
+        </div>
+
+        {/* если есть строка поиска — показываем результаты; иначе — блок рекомендаций */}
+        {s ? (
+          <div className="space-y-3">
+            {items.map((t) => (
+              <TrackCard key={t.id} t={t} onPlay={setNow} />
+            ))}
+          </div>
+        ) : (
+          <RecSection recs={recs} onPlay={setNow} />
+        )}
+      </div>
+
+      <PlayerBar now={now} />
+
+      {/* Профиль-модал */}
+      <ProfileModal
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        onOpenPlaylist={() => alert("Мой плейлист (скоро)")}
+        onOpenSettings={() => alert("Настройки (скоро)")}
+      />
+    </div>
+  );
+
+  // Контент покажется только после авторизации
+  return <AuthGate>{content}</AuthGate>;
+}

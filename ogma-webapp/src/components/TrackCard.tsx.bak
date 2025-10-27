@@ -1,0 +1,257 @@
+import { useEffect, useRef, useState } from "react";
+import type { Track } from "@/types/types";
+import { addToPlaylist, inPlaylist, removeFromPlaylist } from "@/lib/playlist";
+import { sendTrackToMe } from "@/lib/api";
+
+type Props = {
+  t: Track;
+  isActive?: boolean;
+  isPaused?: boolean;
+  onToggle: () => void;
+  /** режим:
+   *  - "default": вправо = добавить, влево = reveal «Скачать»
+   *  - "playlist": вправо = скачать (бот), влево = удалить
+   */
+  mode?: "default" | "playlist";
+};
+
+const TRIGGER_COMMIT = 84;
+const MAX_SWIPE = 160;
+const LEFT_REVEAL = 96;
+const LEFT_MIN_OPEN = 28;
+
+export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default" }: Props) {
+  const startX = useRef<number | null>(null);
+  const startY = useRef<number | null>(null);
+  const cancelledByScroll = useRef(false);
+
+  const [dx, setDx] = useState(0);
+  const [drag, setDrag] = useState(false);
+  const [anim, setAnim] = useState<"none" | "snap" | "remove">("none");
+  const [leftOpen, setLeftOpen] = useState(false);
+  const [toast, setToast] = useState<null | "added" | "exists" | "removed" | "sending" | "sent" | "error">(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 900);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  const playing = !!isActive && !isPaused;
+  const already = inPlaylist(t.id);
+
+  const style: React.CSSProperties = {
+    transform: anim === "remove" ? `translate3d(-110%,0,0)` : `translate3d(${dx}px,0,0)`,
+    transition:
+      anim === "snap"
+        ? "transform 180ms cubic-bezier(.2,.8,.2,1), opacity 180ms"
+        : anim === "remove"
+        ? "transform 200ms ease, opacity 200ms ease"
+        : "none",
+    opacity: anim === "remove" ? 0 : 1,
+    touchAction: "pan-y",
+    willChange: "transform, opacity",
+    backfaceVisibility: "hidden",
+    isolation: "isolate",
+  };
+
+  const pctRight = Math.max(0, Math.min(1, dx / TRIGGER_COMMIT));
+  const pctLeft  = Math.max(0, Math.min(1, -dx / TRIGGER_COMMIT));
+
+  // показываем подложку только когда есть жест/фиксация
+  const showBg = drag || Math.abs(dx) > 1 || leftOpen;
+
+  const vibrate = (ms = 10) => { try { navigator.vibrate?.(ms); } catch {} };
+
+  const commitAdd = () => {
+    const { added } = addToPlaylist(t);
+    setToast(added ? "added" : "exists");
+    vibrate(12);
+  };
+  const commitRemove = () => {
+    setAnim("remove"); vibrate(15);
+    setTimeout(() => {
+      removeFromPlaylist(t.id);
+      setAnim("snap"); setDx(0); setLeftOpen(false);
+      setToast("removed");
+    }, 200);
+  };
+  const commitDownload = async () => {
+    setToast("sending");
+    vibrate(12);
+    try {
+      await sendTrackToMe(t);
+      setToast("sent");
+    } catch {
+      setToast("error");
+    }
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    startX.current = e.clientX;
+    startY.current = e.clientY;
+    cancelledByScroll.current = false;
+    setDrag(true);
+    setAnim("none");
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!drag || startX.current == null || startY.current == null) return;
+
+    const deltaX = e.clientX - startX.current;
+    const deltaY = e.clientY - startY.current;
+
+    // если вертикальный скролл явный — помечаем и выходим (не будет «тапа»)
+    if (Math.abs(deltaY) > 8 && Math.abs(deltaY) > Math.abs(deltaX)) {
+      cancelledByScroll.current = true;
+    }
+
+    let delta = deltaX;
+    if (leftOpen) delta -= -LEFT_REVEAL;
+
+    const limited = delta > 0 ? Math.min(MAX_SWIPE, delta) : Math.max(-MAX_SWIPE, delta);
+    setDx(leftOpen ? -LEFT_REVEAL + limited : limited);
+  };
+
+  const onPointerCancel = () => {
+    cancelledByScroll.current = true;
+    setDrag(false);
+    setAnim("snap");
+    setDx(leftOpen ? -LEFT_REVEAL : 0);
+  };
+
+  const onPointerUp = () => {
+    if (!drag) return;
+    setDrag(false);
+
+    const abs = Math.abs(dx);
+    const wasTap = abs < 6 && !cancelledByScroll.current;
+
+    if (leftOpen && wasTap) {
+      // тап по открытому левому reveal — отправляем
+      commitDownload();
+      setAnim("snap"); setDx(0); setLeftOpen(false);
+      return;
+    }
+
+    if (wasTap) {
+      setAnim("snap"); setDx(0);
+      onToggle();
+      return;
+    }
+
+    // коммиты по порогам
+    if (dx >= TRIGGER_COMMIT) {
+      if (mode === "default") commitAdd();
+      else commitDownload();   // playlist: вправо — скачать через бота
+      setAnim("snap"); setDx(0); setLeftOpen(false);
+      return;
+    }
+    if (dx <= -TRIGGER_COMMIT) {
+      if (mode === "playlist") {
+        commitRemove();        // playlist: влево — удалить
+        return;
+      } else {
+        // default: левый «жёсткий» — скачать (отправить ботом)
+        commitDownload();
+        setAnim("snap"); setDx(0); setLeftOpen(false);
+        return;
+      }
+    }
+
+    // небольшой левый — фиксируем reveal
+    if (dx < 0 && Math.abs(dx) >= LEFT_MIN_OPEN) {
+      setAnim("snap"); setDx(-LEFT_REVEAL); setLeftOpen(true);
+      return;
+    }
+
+    // возврат
+    setAnim("snap"); setDx(0); setLeftOpen(false);
+  };
+
+  const leftBgColor =
+    mode === "playlist"
+      ? `rgba(220,38,38,${0.35 + 0.65 * pctLeft})`   // red-600: удалить
+      : `rgba(37,99,235,${0.35 + 0.65 * pctLeft})`;  // blue-600: скачать
+  const rightBgColor =
+    mode === "default"
+      ? `rgba(22,163,74,${0.35 + 0.65 * pctRight})`  // green-600: в плейлист
+      : `rgba(37,99,235,${0.35 + 0.65 * pctRight})`; // blue-600: скачать
+
+  return (
+    <div className="relative">
+      {/* ПОДЛОЖКА: на всю ширину, но показывается только активная сторона */}
+      {showBg && (
+        <>
+          {/* ЛЕВАЯ сторона (при dx < 0 или когда зафиксирован reveal) */}
+          {(dx < 0 || leftOpen) && (
+            <div
+              className="absolute inset-0 rounded-2xl overflow-hidden select-none flex items-center justify-end pr-4"
+              style={{ background: leftBgColor, transition: "background 120ms linear" }}
+            >
+              <span className="text-white text-sm opacity-90">
+                {mode === "playlist" ? "Удалить" : "Скачать"}
+              </span>
+            </div>
+          )}
+
+          {/* ПРАВАЯ сторона (при dx > 0) */}
+          {dx > 0 && (
+            <div
+              className="absolute inset-0 rounded-2xl overflow-hidden select-none flex items-center justify-start pl-4"
+              style={{ background: rightBgColor, transition: "background 120ms linear" }}
+            >
+              <span className="text-white text-sm font-medium">
+                {mode === "default" ? (already ? "В плейлисте" : "В плейлист") : "Скачать"}
+              </span>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* КОНТЕНТНАЯ КАРТОЧКА */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-pressed={playing}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
+          if (e.key === "Escape" && leftOpen) { setAnim("snap"); setDx(0); setLeftOpen(false); }
+        }}
+        style={style}
+        className={
+          "z-10 cursor-pointer rounded-2xl p-4 shadow bg-white dark:bg-zinc-900 " +
+          "border border-zinc-200 dark:border-zinc-800 overflow-hidden " +
+          (isActive
+            ? "ring-2 ring-zinc-900/10 dark:ring-zinc-100/10 " + (isPaused ? "opacity-95" : "")
+            : "hover:bg-white/95 dark:hover:bg-zinc-900/95")
+        }
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex-1 min-w-0 pr-2 text-left">
+            <div className="text-base font-semibold truncate">{t.title}</div>
+            <div className="text-sm text-zinc-500 truncate">{t.artists?.join(", ")}</div>
+            <div className="mt-1 text-xs text-zinc-400 truncate">{t.hashtags?.join(" ")}</div>
+          </div>
+        </div>
+
+        {toast && (
+          <div className="absolute right-3 bottom-2 text-xs rounded-md px-2 py-1 bg-black/70 text-white shadow-sm">
+            {toast === "added" ? "Добавлено"
+              : toast === "exists" ? "Уже в плейлисте"
+              : toast === "removed" ? "Удалено"
+              : toast === "sending" ? "Отправляю…"
+              : toast === "sent" ? "Отправлено"
+              : toast === "error" ? "Ошибка отправки"
+              : ""}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

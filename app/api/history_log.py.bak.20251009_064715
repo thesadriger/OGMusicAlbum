@@ -1,0 +1,37 @@
+from fastapi import APIRouter, Request, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+import asyncio as _asyncio
+
+from app.api.stream_gateway import _maybe_user_id, _log_play
+
+router = APIRouter()
+
+class PlayIn(BaseModel):
+    track_id: Optional[str] = None
+    chat: Optional[str] = None
+    msg_id: Optional[int] = None
+
+@router.post("/me/history/play")
+async def me_history_play(payload: PlayIn, request: Request):
+    uid = _maybe_user_id(request)
+    if not uid:
+        raise HTTPException(401, "Unauthorized")
+    pool = request.app.state.pool
+    if not pool:
+        raise HTTPException(503, "DB pool not ready")
+
+    track_id = payload.track_id
+    if not track_id and payload.chat and payload.msg_id is not None:
+        row = await pool.fetchrow(
+            "select id::text from tracks where chat_username=$1 and tg_msg_id=$2 limit 1",
+            payload.chat.lstrip("@"), int(payload.msg_id)
+        )
+        if row:
+            track_id = row["id"]
+
+    if not track_id:
+        raise HTTPException(404, "Track not found")
+
+    _asyncio.create_task(_log_play(pool, uid, track_id))
+    return {"ok": True}

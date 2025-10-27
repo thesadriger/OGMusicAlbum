@@ -1,0 +1,440 @@
+import { useEffect, useRef, useState, useCallback } from "react";
+import { apiGet } from "@/lib/api";
+import type { Track } from "@/types/types";
+import { TrackCard } from "./components/TrackCard";
+import UserAvatar from "@/components/UserAvatar";
+import { AuthGate } from "@/components/AuthGate";
+import ArtistsSection from "@/components/ArtistsSection";
+import ArtistPage from "@/pages/ArtistPage";
+import { useHashRoute, goArtist, goBackSmart, Route, goPlaylist } from "@/lib/router";
+import { pushRecentArtists } from "@/lib/recent";
+import ArtistsListPage from "@/pages/ArtistsListPage";
+import PlaylistPage from "@/pages/PlaylistPage";
+import GlobalAudioPlayer from "@/components/GlobalAudioPlayer";
+import ProfilePage from "@/pages/Profile";
+
+
+type SearchResp = { hits: Track[]; total?: number };
+type RecsResp = { items: Track[]; limit: number };
+
+function RecSection({
+  recs,
+  nowId,
+  paused,
+  onToggle,
+}: {
+  recs: Track[];
+  nowId: string | null;
+  paused: boolean;
+  onToggle: (list: Track[], startIndex: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const top = recs.slice(0, 3);
+  const rest = recs.slice(3, 20);
+  const all = [...top, ...rest];
+
+  const CTA_BTN =
+    "appearance-none select-none w-full h-12 flex items-center justify-center px-4 " +
+    "text-base leading-none font-medium tracking-wide " +
+    "bg-zinc-200/90 dark:bg-zinc-800/90 text-zinc-900 dark:text-zinc-50 " +
+    "hover:opacity-95 active:opacity-90";
+
+  return (
+    <section className="relative rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3 overflow-hidden shadow">
+      <div className="flex items-center justify-between px-1">
+        <div className="text-sm text-zinc-500">Рекомендации</div>
+        {open && (
+          <button
+            onClick={() => setOpen(false)}
+            className="px-3 py-1 rounded-lg text-xs bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 hover:opacity-90 active:opacity-80"
+          >
+            свернуть
+          </button>
+        )}
+      </div>
+
+      <div className="mt-3 space-y-3">
+        {top.map((t, i) => (
+          <TrackCard
+            key={t.id}
+            t={t}
+            isActive={nowId === t.id}
+            isPaused={paused}
+            onToggle={() => onToggle(all, i)}
+          />
+        ))}
+      </div>
+
+      {!open && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 -mx-3 -mb-3 z-10 rounded-b-2xl overflow-hidden">
+          <div className="bg-gradient-to-b from-transparent via-white/70 to-white dark:via-zinc-900/50 dark:to-zinc-900 shadow-[0_-18px_32px_rgba(0,0,0,0.65)]">
+            <button
+              onClick={() => setOpen(true)}
+              className={`${CTA_BTN} rounded-b-2xl pointer-events-auto`}
+            >
+            </button>
+          </div>
+        </div>
+      )}
+
+      {open && (
+        <div className="mt-3 space-y-3">
+          {rest.map((t, j) => (
+            <TrackCard
+              key={t.id}
+              t={t}
+              isActive={nowId === t.id}
+              isPaused={paused}
+              onToggle={() => onToggle(all, 3 + j)}
+            />
+          ))}
+          <div className="mt-3 -mx-3 -mb-3">
+            <button onClick={() => setOpen(false)} className={`${CTA_BTN} rounded-b-2xl`}>
+              Скрыть рекомендации
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export default function App() {
+  const route: Route = useHashRoute();
+
+  const [q, setQ] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [items, setItems] = useState<Track[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
+  const [recs, setRecs] = useState<Track[]>([]);
+  const [now, setNow] = useState<Track | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [paused, setPaused] = useState(false);
+
+  const [queue, setQueue] = useState<Track[]>([]);
+  const [qIndex, setQIndex] = useState<number>(-1);
+
+  const playList = (list: Track[], startIndex: number) => {
+    const safe = list.filter(Boolean);
+    if (!safe.length) return;
+    const idx = Math.max(0, Math.min(startIndex, safe.length - 1));
+    setQueue(safe);
+    setQIndex(idx);
+    setNow(safe[idx]);
+    setPaused(false);
+    pushRecentArtists(safe[idx].artists ?? []);
+  };
+
+  const toggleTrack = (list: Track[], index: number, trackId: string) => {
+    // если нажали по текущему треку — это toggle
+    if (now && now.id === trackId) {
+      const wasPaused = paused;
+      setPaused(p => !p);
+
+      // iOS: воспроизведение должно дергаться строго в жесте пользователя.
+      // Стартуем только если ДО нажатия была пауза.
+      if (wasPaused && now && window.__ogmaPlay) {
+        try { window.__ogmaPlay(now); } catch { }
+      }
+      return;
+    }
+
+    // запускаем выбранный из списка
+    const t = list[index];
+    if (!t) return;
+    setNow(t);
+    setPaused(false);
+    try {
+      window.__ogmaPlay?.(t); // прямой старт в рамках жеста
+    } catch { }
+    setQueue(list.filter(Boolean));
+    setQIndex(index);
+    pushRecentArtists(t.artists ?? []);
+  };
+
+
+  // Опционально: что делать, когда дошли до конца и wrap=false
+  const onQueueEnd = () => {
+    // например, просто пауза
+    setPaused(true);
+  };
+
+  /**
+   * Перейти к следующему треку.
+   * @param wrap если true — зацикливаемся на начало очереди
+   * @returns true если переход состоялся
+   */
+  const next = useCallback((
+    wrap: boolean = false
+  ): boolean => {
+    if (!queue.length) return false;
+
+    let moved = false;
+    setQIndex((prev) => {
+      if (prev < 0) return prev;
+
+      // нормализуем индекс под актуальную длину очереди
+      const safeLen = queue.length;
+      let nextIdx = prev + 1;
+
+      if (nextIdx >= safeLen) {
+        if (!wrap) {
+          onQueueEnd?.();
+          return prev; // не двигаемся
+        }
+        nextIdx = 0; // цикл
+      }
+
+      const tr = queue[nextIdx];
+      if (!tr) return prev; // очередь могла измениться
+
+      setNow(tr);
+      // критично для iOS: play в рамках жеста пользователя (кнопка)
+      try { (window as any).__ogmaPlay?.(tr); } catch { }
+      setPaused(false);
+      try { pushRecentArtists(tr.artists ?? []); } catch { }
+
+      moved = true;
+      return nextIdx;
+    });
+
+    return moved;
+  }, [queue]);
+
+
+  /**
+   * Перейти к предыдущему треку.
+   * @param wrap если true — прыгаем на последний элемент при достижении начала
+   * @returns true если переход состоялся
+   */
+  const prev = useCallback((
+    wrap: boolean = false
+  ): boolean => {
+    if (!queue.length) return false;
+
+    let moved = false;
+    setQIndex((prevIdx) => {
+      if (prevIdx < 0) return prevIdx;
+
+      const safeLen = queue.length;
+      let nextIdx = prevIdx - 1;
+
+      if (nextIdx < 0) {
+        if (!wrap) return prevIdx; // остаёмся на месте
+        nextIdx = Math.max(0, safeLen - 1); // цикл в конец
+      }
+
+      const tr = queue[nextIdx];
+      if (!tr) return prevIdx;
+
+      setNow(tr);
+      // критично для iOS: play в рамках жеста пользователя (кнопка)
+      try { (window as any).__ogmaPlay?.(tr); } catch { }
+      setPaused(false);
+      try { pushRecentArtists(tr.artists ?? []); } catch { }
+
+      moved = true;
+      return nextIdx;
+    });
+
+    return moved;
+  }, [queue]);
+
+  useEffect(() => {
+    try { window?.Telegram?.WebApp?.ready?.(); window?.Telegram?.WebApp?.expand?.(); } catch { }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    apiGet<RecsResp>("/me/recs?limit=20", { timeoutMs: 20000 })
+      .then((r) => { if (!cancelled) setRecs(r.items ?? []); })
+      .catch(() => { if (!cancelled) setRecs([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const s = q.trim();
+    if (!s) { setItems([]); setTotal(null); return; }
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      (async () => {
+        setLoading(true);
+        const PAGE = 100, MAX_PAGES = 20;
+        let offset = 0;
+        const acc: Track[] = [];
+        let totalValue: number | null = null;
+
+        for (let i = 0; i < MAX_PAGES; i++) {
+          const resp = await apiGet<SearchResp>(
+            `/search?q=${encodeURIComponent(s)}&limit=${PAGE}&offset=${offset}`,
+            { timeoutMs: 20000 }
+          );
+          if (cancelled) return;
+          acc.push(...(resp.hits ?? []));
+          if (typeof resp.total === "number") totalValue = resp.total;
+          offset += PAGE;
+          const got = resp.hits?.length ?? 0;
+          if (got < PAGE) break;
+          if (totalValue != null && acc.length >= totalValue) break;
+        }
+
+        if (!cancelled) { setItems(acc); setTotal(totalValue ?? acc.length); }
+      })()
+        .catch(() => { if (!cancelled) { setItems([]); setTotal(0); } })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    }, 300);
+
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [q]);
+
+  const s = q.trim();
+  const openArtist = (name: string) => goArtist(name);
+
+  const [enter, setEnter] = useState(false);
+  const enterKey = (() => {
+    switch (route.name) {
+      case "artist": return `artist:${(route as any).artist}`;
+      case "artists": return `artists:${(route as any).which}`;
+      case "playlist": return "playlist";
+      default: return String((route as any).name || "home"); // включает "profile"
+    }
+  })();
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+    const t = setTimeout(() => setEnter(true), 0);
+    return () => { clearTimeout(t); setEnter(false); };
+  }, [enterKey]);
+
+  return (
+    <AuthGate>
+      <div className="min-h-screen pb-28 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
+        <div
+          className={
+            "max-w-3xl mx-auto p-4 space-y-4 transition-all duration-200 " +
+            (enter ? "opacity-100 translate-y-0" : "opacity-0 translate-y-1")
+          }
+        >
+          <div className="flex items-center justify-between">
+            <button
+              onClick={goPlaylist}
+              className="text-2xl font-bold hover:opacity-90"
+              title="Открыть мой плейлист"
+            >
+              Мой плейлист &gt;
+            </button>
+            <UserAvatar />
+          </div>
+
+          <div className="flex gap-2">
+            <form
+              className="relative flex-1"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const s2 = q.trim();
+                if (s2) window.location.hash = "/";
+              }}
+            >
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Escape") setQ(""); }}
+                placeholder="Поиск по названию, артистам, хештегам…"
+                className={
+                  "w-full rounded-xl px-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 " +
+                  (q.trim().length > 0 ? "pr-11" : "pr-4")
+                }
+              />
+              {q.trim().length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setQ("")}
+                  aria-label="Очистить поиск"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 h-7 w-7 flex items-center justify-center rounded-full bg-transparent text-zinc-400 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+                >
+                  ×
+                </button>
+              )}
+            </form>
+          </div>
+
+          <div className="text-sm text-zinc-500">
+            {loading ? "Загружаем…" : (s ? `Найдено: ${total ?? items.length}` : null)}
+          </div>
+
+          {route.name === "playlist" ? (
+            <PlaylistPage
+              key="playlist"
+              onBack={goBackSmart}
+              nowId={now?.id ?? null}
+              paused={paused}
+              onToggleTrack={toggleTrack}
+            />
+          ) : route.name === "artists" ? (
+            <ArtistsListPage
+              key={`artists:${route.which}`}
+              which={route.which}
+              onBack={goBackSmart}
+              onOpenArtist={openArtist}
+            />
+          ) : route.name === "artist" ? (
+            <ArtistPage
+              key={`artist:${route.artist}`}
+              artist={route.artist}
+              onBack={goBackSmart}
+              nowId={now?.id ?? null}
+              paused={paused}
+              onToggleTrack={toggleTrack}
+            />
+          ) : route.name === "profile" ? (
+            <ProfilePage />
+          ) : s ? (
+            <div className="space-y-3">
+              {items.map((t, i) => (
+                <TrackCard
+                  key={t.id}
+                  t={t}
+                  isActive={now?.id === t.id}
+                  isPaused={paused}
+                  onToggle={() => toggleTrack(items, i, t.id)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <RecSection
+                recs={recs}
+                nowId={now?.id ?? null}
+                paused={paused}
+                onToggle={(list, idx) => toggleTrack(list, idx, list[idx].id)}
+              />
+              <ArtistsSection onOpenArtist={openArtist} />
+            </div>
+          )}
+        </div>
+        <GlobalAudioPlayer
+          now={now}
+          paused={paused}
+          onEnded={() => { const ok = next(false); if (!ok) setPaused(true); }}
+          onPlayPauseChange={(p) => setPaused(p)}
+          onPrev={() => prev(false)}
+          onNext={() => next(false)}
+          queue={queue}
+          currentIndex={qIndex}
+          onPickFromQueue={(i) => {
+            if (i >= 0 && i < queue.length) {
+              setQIndex(i);
+              const tr = queue[i];
+              setNow(tr);
+              setPaused(false);
+              try { (window as any).__ogmaPlay?.(tr); } catch { }
+            }
+          }}
+        />
+      </div>
+    </AuthGate >
+  );
+}

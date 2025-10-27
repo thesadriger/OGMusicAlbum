@@ -1,0 +1,117 @@
+from __future__ import annotations
+from typing import Optional, List, Dict, Any
+import asyncpg
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from app.api.users import _current_user_id, _get_pool  # переиспользуем авторизацию/Pool
+
+router = APIRouter()
+
+def _row_to_dict(r: asyncpg.Record) -> Dict[str, Any]:
+    return {
+        "id": r["id"],
+        "msgId": r["msgId"],
+        "chat": r["chat"],
+        "title": r["title"],
+        "artists": r["artists"],
+        "hashtags": r["hashtags"],
+        "duration": r["duration"],
+        "mime": r["mime"],
+    }
+
+@router.get("/me/recs")
+async def my_recs(
+    limit: int = Query(12, ge=1, le=50),
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    # 1) последние взаимодействия пользователя → артисты
+    artists: List[str] = await pool.fetchval("""
+        with last_interactions as (
+            select h.track_id
+            from history h
+            where h.user_id=$1 and h.action in ('play','save')
+            order by h.ts desc
+            limit 50
+        )
+        select array_agg(distinct a) from (
+            select unnest(t.artists) as a
+            from tracks t join last_interactions li on li.track_id = t.id
+        ) s
+    """, user_id) or []
+
+    # если истории нет — возьмём артистов из последних избранных
+    if not artists:
+        artists = await pool.fetchval("""
+            with last_favs as (
+                select f.track_id from favorites f
+                where f.user_id=$1
+                order by f.ts desc
+                limit 30
+            )
+            select array_agg(distinct a) from (
+                select unnest(t.artists) as a
+                from tracks t join last_favs lf on lf.track_id = t.id
+            ) s
+        """, user_id) or []
+
+    # 2) рекомендации «ещё этого артиста»
+    by_artist = []
+    if artists:
+        rows = await pool.fetch("""
+            select t.id::text as id, t.tg_msg_id as "msgId", t.chat_username as chat,
+                   t.title, t.artists, t.hashtags, t.duration_s as duration, t.mime
+            from tracks t
+            where exists (
+                select 1 from unnest($2::text[]) a where a = any(t.artists)
+            )
+              and not exists (select 1 from favorites f where f.user_id=$1 and f.track_id=t.id)
+            order by t.created_at desc
+            limit $3
+        """, user_id, artists, limit)
+        by_artist = [_row_to_dict(r) for r in rows]
+
+    # 3) more-like-this: по последнему «любимому» треку — совпадение артистов или хештегов
+    mlt = []
+    last_fav = await pool.fetchrow("""
+        select t.id, t.artists, t.hashtags
+        from favorites f
+        join tracks t on t.id = f.track_id
+        where f.user_id=$1
+        order by f.ts desc
+        limit 1
+    """, user_id)
+    if last_fav:
+        rows = await pool.fetch("""
+            select t.id::text as id, t.tg_msg_id as "msgId", t.chat_username as chat,
+                   t.title, t.artists, t.hashtags, t.duration_s as duration, t.mime
+            from tracks t
+            where t.id <> $2
+              and (
+                    (exists (select 1 from unnest($3::text[]) a where a = any(t.artists)))
+                 or (exists (select 1 from unnest($4::text[]) h where h = any(t.hashtags)))
+              )
+            order by t.created_at desc
+            limit $5
+        """, user_id, last_fav["id"], last_fav["artists"] or [], last_fav["hashtags"] or [], limit)
+        mlt = [_row_to_dict(r) for r in rows]
+
+    # 4) запасной вариант — просто «новинки» из канала
+    fallback = []
+    if not by_artist and not mlt:
+        rows = await pool.fetch("""
+            select t.id::text as id, t.tg_msg_id as "msgId", t.chat_username as chat,
+                   t.title, t.artists, t.hashtags, t.duration_s as duration, t.mime
+            from tracks t
+            order by t.created_at desc
+            limit $1
+        """, limit)
+        fallback = [_row_to_dict(r) for r in rows]
+
+    return {
+        "groups": {
+            "byArtist": by_artist,
+            "moreLikeThis": mlt,
+            "new": fallback
+        }
+    }

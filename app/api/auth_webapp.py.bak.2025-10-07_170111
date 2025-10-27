@@ -1,0 +1,49 @@
+import os, hmac, hashlib, time, urllib.parse, json
+from fastapi import APIRouter, HTTPException, Response
+from pydantic import BaseModel
+
+router = APIRouter()
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+
+def _secret() -> bytes:
+    # Правильный секрет для WebApp initData:
+    # secret = HMAC_SHA256(key=b"WebAppData", msg=BOT_TOKEN).digest()
+    return hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+
+def _compute_hash(data_check_string: str) -> str:
+    return hmac.new(_secret(), data_check_string.encode(), hashlib.sha256).hexdigest()
+
+def verify_init_data(init_data: str, max_age_sec: int = 300):
+    items = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
+    given_hash = items.pop("hash", "")
+    # data_check_string: сортированные пары k=v, разделённые \n
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(items.items(), key=lambda kv: kv[0]))
+    calc_hash = _compute_hash(data_check_string)
+    if not given_hash or not hmac.compare_digest(given_hash, calc_hash):
+        raise HTTPException(status_code=401, detail="Bad initData signature")
+
+    auth_date = int(items.get("auth_date", "0") or 0)
+    if auth_date and (time.time() - auth_date) > max_age_sec:
+        raise HTTPException(status_code=401, detail="initData too old")
+
+    user = None
+    uj = items.get("user")
+    if uj:
+        try:
+            user = json.loads(uj)
+        except Exception:
+            user = None
+    return user
+
+class InitDataIn(BaseModel):
+    init_data: str
+
+@router.post("/auth/webapp")
+async def auth_webapp(body: InitDataIn, response: Response):
+    user = verify_init_data(body.init_data)
+    # Простейшая сессия (заглушка): подпись initData
+    sid = _compute_hash(body.init_data)[:32]
+    response.set_cookie("ogma_sid", sid, httponly=True, samesite="Lax", max_age=600)
+    return {"ok": True, "user": user}

@@ -1,0 +1,33 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ogma
+      POSTGRES_USER: ogma
+      POSTGRES_PASSWORD: ogma_pass
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+
+  meili:
+    image: getmeili/meilisearch:v1.11
+    environment:
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: change_me_master_key
+    ports:
+      - "127.0.0.1:7700:7700"
+    volumes:
+      - meili:/meili_data
+    restart: unless-stopped
+volumes:
+  pgdata:
+  meili:

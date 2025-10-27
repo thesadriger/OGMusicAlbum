@@ -1,0 +1,225 @@
+// /home/ogma/ogma/ogma-webapp/src/App.tsx
+import { useEffect, useState } from "react";
+import { apiGet } from "@/lib/api";
+import type { Track } from "@/types";
+import { TrackCard } from "./components/TrackCard";
+import { PlayerBar } from "./components/PlayerBar";
+import UserAvatar from "@/components/UserAvatar";
+import { AuthGate } from "@/components/AuthGate";
+import { ProfileModal } from "@/components/ProfileModal";
+import ArtistsSection from "@/components/ArtistsSection";
+
+type SearchResp = { hits: Track[]; total?: number };
+type RecsResp   = { items: Track[]; limit: number };
+
+/** Рекомендации: показываем 3, остальное — в «раскрыть» */
+function RecSection({ recs, onPlay }: { recs: Track[]; onPlay: (t: Track) => void }) {
+  const [open, setOpen] = useState(false);
+  const top = recs.slice(0, 3);
+  const rest = recs.slice(3, 20);
+
+  const CTA_BTN =
+    "appearance-none select-none w-full h-12 flex items-center justify-center px-4 " +
+    "text-base leading-none font-medium tracking-wide " +
+    "bg-zinc-200/90 dark:bg-zinc-800/90 text-zinc-900 dark:text-zinc-50 " +
+    "hover:opacity-95 active:opacity-90";
+
+  return (
+    <section className="relative rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3 overflow-hidden shadow">
+      {/* шапка */}
+      <div className="flex items-center justify-between px-1">
+        <div className="text-sm text-zinc-500">Рекомендации</div>
+        {open && (
+          <button
+            onClick={() => setOpen(false)}
+            className="px-3 py-1 rounded-lg text-xs bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 hover:opacity-90 active:opacity-80"
+          >
+            свернуть
+          </button>
+        )}
+      </div>
+
+      {/* топ-3 */}
+      <div className="mt-3 space-y-3">
+        {top.map((t) => (
+          <TrackCard key={t.id} t={t} onPlay={onPlay} />
+        ))}
+      </div>
+
+      {/* оверлей-кнопка (когда закрыто) */}
+      {!open && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 -mx-3 -mb-3 z-10 rounded-b-2xl overflow-hidden">
+          <div className="bg-gradient-to-b from-transparent via-white/70 to-white dark:via-zinc-900/50 dark:to-zinc-900 shadow-[0_-18px_32px_rgba(0,0,0,0.65)]">
+            <button
+              onClick={() => setOpen(true)}
+              className={`${CTA_BTN} rounded-b-2xl pointer-events-auto`}
+            >
+              Больше клевого рандома 🤙
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* раскрыто: всё остальное + нижняя кнопка */}
+      {open && (
+        <div className="mt-3 space-y-3">
+          {rest.map((t) => (
+            <TrackCard key={t.id} t={t} onPlay={onPlay} />
+          ))}
+          <div className="mt-3 -mx-3 -mb-3">
+            <button onClick={() => setOpen(false)} className={`${CTA_BTN} rounded-b-2xl`}>
+              Скрыть рекомендации
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export default function App() {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<Track[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
+  const [recs, setRecs] = useState<Track[]>([]);
+  const [now, setNow] = useState<Track | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  // Telegram WebApp UI
+  useEffect(() => {
+    try {
+      window?.Telegram?.WebApp?.ready?.();
+      window?.Telegram?.WebApp?.expand?.();
+    } catch {}
+  }, []);
+
+  // рекомендации (до 20)
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    apiGet<RecsResp>("/me/recs?limit=20", { timeoutMs: 20000 })
+      .then((r) => {
+        if (!cancelled) setRecs(r.items ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setRecs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // поиск без лимита — пагинируем по 100
+  useEffect(() => {
+    const s = q.trim();
+    if (!s) {
+      setItems([]);
+      setTotal(null);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      (async () => {
+        setLoading(true);
+        const PAGE = 100;
+        const MAX_PAGES = 20;
+        let offset = 0;
+        const acc: Track[] = [];
+        let totalValue: number | null = null;
+
+        for (let i = 0; i < MAX_PAGES; i++) {
+          const resp = await apiGet<SearchResp>(
+            `/search?q=${encodeURIComponent(s)}&limit=${PAGE}&offset=${offset}`,
+            { timeoutMs: 20000 }
+          );
+          if (cancelled) return;
+
+          acc.push(...(resp.hits ?? []));
+          if (typeof resp.total === "number") totalValue = resp.total;
+
+          offset += PAGE;
+          const got = resp.hits?.length ?? 0;
+          if (got < PAGE) break;
+          if (totalValue != null && acc.length >= totalValue) break;
+        }
+
+        if (!cancelled) {
+          setItems(acc);
+          setTotal(totalValue ?? acc.length);
+        }
+      })()
+        .catch(() => {
+          if (!cancelled) {
+            setItems([]);
+            setTotal(0);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [q]);
+
+  const s = q.trim();
+
+  return (
+    <AuthGate>
+      <div className="min-h-screen pb-28 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
+        <div className="max-w-3xl mx-auto p-4 space-y-4">
+          {/* шапка */}
+          <div className="flex items-center justify-between">
+            <h1 className="text-2xl font-bold">@OGMusicAlbum</h1>
+            <UserAvatar onClick={() => setProfileOpen(true)} />
+          </div>
+
+          {/* поиск */}
+          <div className="flex gap-2">
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Поиск по названию, артистам, хештегам…"
+              className="flex-1 rounded-xl px-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800"
+            />
+          </div>
+
+          <div className="text-sm text-zinc-500">
+            {loading ? "Загружаем…" : (s ? `Найдено: ${total ?? items.length}` : null)}
+          </div>
+
+          {/* контент */}
+          {s ? (
+            <div className="space-y-3">
+              {items.map((t) => (
+                <TrackCard key={t.id} t={t} onPlay={setNow} />
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <RecSection recs={recs} onPlay={setNow} />
+              <ArtistsSection onPlay={setNow} />
+            </div>
+          )}
+        </div>
+
+        <PlayerBar now={now} />
+
+        <ProfileModal
+          open={profileOpen}
+          onClose={() => setProfileOpen(false)}
+          onOpenPlaylist={() => alert("Мой плейлист (скоро)")}
+          onOpenSettings={() => alert("Настройки (скоро)")}
+        />
+      </div>
+    </AuthGate>
+  );
+}

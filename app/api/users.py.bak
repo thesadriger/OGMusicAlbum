@@ -1,0 +1,457 @@
+from __future__ import annotations
+
+import os, json, hmac, hashlib, time
+from urllib.parse import parse_qsl
+from typing import Optional, Any, Dict, List
+
+import asyncpg
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from pydantic import BaseModel
+
+router = APIRouter()
+
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
+ALLOW_DEBUG = os.environ.get("ALLOW_DEBUG_HEADERS", "0").lower() in {"1", "true", "yes"}
+TG_AUTH_MAX_AGE = int(os.environ.get("TG_AUTH_MAX_AGE", "86400"))  # 24h по умолчанию
+
+
+# ---------- Telegram initData verification ----------
+
+def _extract_pairs(init_data: str) -> Dict[str, str]:
+    pairs = dict(parse_qsl(init_data, keep_blank_values=True, encoding="utf-8"))
+    if "hash" not in pairs:
+        raise HTTPException(401, "Missing hash")
+    return pairs
+
+def _build_data_check_string(pairs: Dict[str, str]) -> str:
+    # Все пары, кроме 'hash', отсортированные по ключу, в формате key=value, разделитель '\n'
+    items = [f"{k}={pairs[k]}" for k in sorted(k for k in pairs.keys() if k != "hash")]
+    return "\n".join(items)
+
+def _secret_webapp(bot_token: str) -> bytes:
+    # Спецификация WebApp: secret = HMAC_SHA256(key="WebAppData", msg=bot_token)
+    return hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+
+def _secret_login_widget(bot_token: str) -> bytes:
+    # Классический Login Widget: secret = SHA256(bot_token)
+    return hashlib.sha256(bot_token.encode("utf-8")).digest()
+
+def _verify_signature(secret: bytes, dcs: str, received_hash_hex: str) -> bool:
+    calc = hmac.new(secret, dcs.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(calc, received_hash_hex.lower())
+
+def _verify_webapp_init_data(init_data: str) -> Dict[str, Any]:
+    """
+    Валидируем Telegram initData (WebApp/mini-app).
+    Совместимо и с Login Widget (на всякий случай), но основной путь — WebApp secret.
+    Возвращаем payload user (dict) и бросаем 401 при несоответствии подписи/протухании.
+    """
+    if not BOT_TOKEN:
+        raise HTTPException(500, "Server auth is not configured")
+
+    pairs = _extract_pairs(init_data)
+    received_hash = pairs["hash"]
+    dcs = _build_data_check_string(pairs)
+
+    ok = (
+        _verify_signature(_secret_webapp(BOT_TOKEN), dcs, received_hash) or
+        _verify_signature(_secret_login_widget(BOT_TOKEN), dcs, received_hash)
+    )
+    if not ok:
+        raise HTTPException(401, "Bad auth signature")
+
+    # Проверка свежести auth_date
+    try:
+        auth_date = int(pairs.get("auth_date", "0"))
+    except Exception:
+        raise HTTPException(401, "Bad auth_date")
+    now_ts = int(time.time())
+    if auth_date <= 0 or (now_ts - auth_date) > TG_AUTH_MAX_AGE:
+        raise HTTPException(401, "Auth data expired")
+
+    # user приходит JSON-ом в поле 'user'
+    try:
+        user = json.loads(pairs.get("user", "{}"))
+        if not isinstance(user, dict):
+            raise ValueError
+    except Exception:
+        raise HTTPException(401, "Invalid user payload")
+
+    return user
+
+
+# ---------- DB helpers ----------
+
+async def _get_pool(req: Request) -> asyncpg.Pool:
+    pool = getattr(req.app.state, "pool", None)
+    if not pool:
+        raise HTTPException(503, "DB pool not ready")
+    return pool
+
+async def _ensure_users_table(pool: asyncpg.Pool) -> None:
+    """
+    Лёгкая миграция «на лету», чтобы не падать, если таблицы ещё нет.
+    Ничего не меняет, если всё уже создано.
+    """
+    ddl = """
+    create table if not exists users(
+        telegram_id    bigint primary key,
+        username       text,
+        name           text,
+        photo_url      text,
+        is_discoverable boolean default false,
+        created_at     timestamptz default now()
+    );
+
+    create table if not exists user_contacts(
+        user_id     bigint not null,
+        contact_tid bigint not null,
+        primary key (user_id, contact_tid)
+    );
+    """
+    try:
+        async with pool.acquire() as con:
+            await con.execute(ddl)
+    except Exception:
+        # Не валим запросы, если миграция не удалась (в prod обычно есть нормальные миграции)
+        pass
+
+
+# ---------- Current user ----------
+
+async def _current_user_id(req: Request, pool: asyncpg.Pool = Depends(_get_pool)) -> int:
+    """
+    Источники:
+      1) prod: заголовок X-Telegram-Init-Data (полный initData из WebApp)
+      2) dev:  X-Debug-User-Id (+ X-Debug-Username/Name), если ALLOW_DEBUG_HEADERS=1
+    """
+    init_data = req.headers.get("x-telegram-init-data")
+    if init_data:
+        u = _verify_webapp_init_data(init_data)
+        tid = int(u["id"])
+        username = u.get("username")
+        name = (u.get("first_name") or "") + ((" " + u.get("last_name")) if u.get("last_name") else "")
+        photo = u.get("photo_url")
+    elif (
+        # dev-режим по флагу
+        ALLOW_DEBUG
+        # или запрос идёт с loopback — разрешаем debug-хедер локально
+        or (req.client and req.client.host in ("127.0.0.1", "::1", "localhost"))
+    ):
+        debug_id = req.headers.get("x-debug-user-id")
+        if not debug_id:
+            # если флаг явного dev включён — подсказать, что не хватает id
+            if ALLOW_DEBUG:
+                raise HTTPException(401, "No auth (debug id missing)")
+            # иначе это неавторизованный вызов
+            raise HTTPException(401, "No auth")
+        tid = int(debug_id)
+        username = req.headers.get("x-debug-username")
+        name = req.headers.get("x-debug-name") or username or f"user_{tid}"
+        photo = None
+    else:
+        raise HTTPException(401, "No auth")
+
+    # ensure schema and upsert user
+    await _ensure_users_table(pool)
+    await pool.execute(
+        """
+        insert into users(telegram_id, username, name, photo_url)
+        values ($1,$2,$3,$4)
+        on conflict (telegram_id) do update
+        set username   = coalesce(excluded.username, users.username),
+            name       = coalesce(excluded.name, users.name),
+            photo_url  = coalesce(excluded.photo_url, users.photo_url)
+        """,
+        tid, username, name, photo
+    )
+    return tid
+
+
+# ---------- Endpoints ----------
+
+@router.get("/me")
+async def me(
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    user = await pool.fetchrow(
+        "select telegram_id, username, name, photo_url, is_discoverable, created_at from users where telegram_id=$1",
+        user_id
+    )
+    favs = await pool.fetchval("select count(*) from favorites where user_id=$1", user_id) or 0
+    plays = await pool.fetchval("select count(*) from history   where user_id=$1 and action::text='play'", user_id) or 0
+    return {"user": dict(user) if user else {"telegram_id": user_id}, "stats": {"favorites": favs, "plays": plays}}
+
+
+@router.get("/me/favorites")
+async def get_favorites(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    rows = await pool.fetch(
+        """
+        select t.id::text, t.tg_msg_id as "msgId", t.chat_username as chat,
+               t.title, t.artists, t.hashtags, t.duration_s as duration, t.mime, f.ts
+        from favorites f
+        join tracks t on t.id = f.track_id
+        where f.user_id = $1
+        order by f.ts desc
+        limit $2 offset $3
+        """,
+        user_id, limit, offset
+    )
+    total = await pool.fetchval("select count(*) from favorites where user_id=$1", user_id)
+    return {"items": [dict(r) for r in rows], "limit": limit, "offset": offset, "total": total}
+
+
+@router.post("/me/favorites/{track_id}")
+async def add_favorite(
+    track_id: str,
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    ok = await pool.fetchval("select 1 from tracks where id=$1::uuid", track_id)
+    if not ok:
+        raise HTTPException(404, "Track not found")
+
+    await pool.execute(
+        "insert into favorites(user_id, track_id) values ($1, $2::uuid) on conflict do nothing",
+        user_id, track_id
+    )
+    await pool.execute(
+        "insert into history(user_id, track_id, action) values ($1, $2::uuid, 'save')",
+        user_id, track_id
+    )
+    return {"ok": True}
+
+
+@router.delete("/me/favorites/{track_id}")
+async def remove_favorite(
+    track_id: str,
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    await pool.execute("delete from favorites where user_id=$1 and track_id=$2::uuid", user_id, track_id)
+    return {"ok": True}
+
+
+@router.get("/me/recs")
+async def my_recommendations(
+    limit: int = Query(30, ge=1, le=50),
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    # исключим треки из избранного и последних прослушиваний
+    ex_rows = await pool.fetch("""
+        select track_id::text from favorites where user_id=$1
+        union
+        select track_id::text from history where user_id=$1 and action::text in ('play','save')
+    """, user_id)
+    exclude = {r["track_id"] for r in ex_rows}
+
+    # топ-артисты пользователя
+    arts = await pool.fetch("""
+        with fav_art as (
+            select unnest(t.artists) a
+            from favorites f join tracks t on t.id = f.track_id
+            where f.user_id=$1
+        ),
+        play_art as (
+            select unnest(t.artists) a
+            from history h join tracks t on t.id = h.track_id
+            where h.user_id=$1 and h.action::text in ('play','save')
+        )
+        select lower(a) artist, count(*) cnt
+        from (select a from fav_art union all select a from play_art) s
+        group by 1
+        order by cnt desc
+        limit 5
+    """, user_id)
+    top_artists = [r["artist"] for r in arts]
+
+    items: List[Dict[str, Any]] = []
+    if top_artists:
+        per_bucket = max(3, min(10, limit // max(1, len(top_artists)) + 2))
+        buckets: List[tuple[str, List[Dict[str, Any]]]] = []
+        for a in top_artists:
+            rows = await pool.fetch("""
+                select id::text, tg_msg_id as "msgId", chat_username as chat,
+                       title, artists, hashtags, duration_s as duration, mime, created_at
+                from tracks
+                where exists (select 1 from unnest(artists) x where lower(x)=lower($1))
+                order by created_at desc
+                limit $2
+            """, a, per_bucket * 4)
+            lst = [dict(r) for r in rows if r["id"] not in exclude]
+            buckets.append((a, lst))
+
+        idx = 0
+        while len(items) < limit and any(lst for _, lst in buckets):
+            for artist, lst in buckets:
+                if idx < len(lst):
+                    rec = dict(lst[idx])
+                    rec["reason"] = f"artist:{artist}"
+                    items.append(rec)
+                    if len(items) >= limit:
+                        break
+            idx += 1
+
+    # fallback — свежие треки
+    if len(items) < limit:
+        rows = await pool.fetch("""
+            select id::text, tg_msg_id as "msgId", chat_username as chat,
+                   title, artists, hashtags, duration_s as duration, mime, created_at
+            from tracks
+            order by created_at desc
+            limit $1
+        """, limit * 2)
+        for r in rows:
+            if len(items) >= limit:
+                break
+            if r["id"] in exclude:
+                continue
+            rec = dict(r)
+            rec["reason"] = "new"
+            items.append(rec)
+
+    return {"items": items[:limit], "limit": limit}
+
+
+class DiscoverableBody(BaseModel):
+    value: bool
+
+@router.post("/consent/discoverable")
+async def set_discoverable(
+    body: DiscoverableBody,
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    await pool.execute(
+        "update users set is_discoverable=$2 where telegram_id=$1",
+        user_id, body.value
+    )
+    return {"ok": True, "is_discoverable": body.value}
+
+
+class ImportContactsBody(BaseModel):
+    user_ids: Optional[List[int]] = None
+    usernames: Optional[List[str]] = None
+
+@router.post("/contacts/import")
+async def import_contacts(
+    body: ImportContactsBody,
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    to_add: set[int] = set()
+
+    # ids напрямую
+    if body.user_ids:
+        for x in body.user_ids:
+            try:
+                tid = int(x)
+                if tid > 0 and tid != user_id:
+                    to_add.add(tid)
+            except Exception:
+                pass
+
+    # usernames -> ids по нашей БД
+    if body.usernames:
+        ulist = [u.lower() for u in body.usernames if u]
+        if ulist:
+            rows = await pool.fetch(
+                "select telegram_id from users where lower(username) = any($1::text[]);",
+                ulist
+            )
+            for r in rows:
+                tid = int(r["telegram_id"])
+                if tid > 0 and tid != user_id:
+                    to_add.add(tid)
+
+    if to_add:
+        await pool.executemany(
+            "insert into user_contacts(user_id, contact_tid) values ($1,$2) on conflict do nothing",
+            [(user_id, tid) for tid in to_add]
+        )
+    total = await pool.fetchval("select count(*) from user_contacts where user_id=$1", user_id)
+    return {"added": len(to_add), "total": total}
+
+
+@router.get("/contacts")
+async def get_contacts(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    suggest: bool = Query(False, description="если true — показать вообще всех discoverable, а не только моих"),
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    if suggest:
+        rows = await pool.fetch("""
+            select
+              u.telegram_id, u.username, u.name, u.photo_url, u.created_at,
+              false as is_mutual
+            from users u
+            where u.is_discoverable = true and u.telegram_id <> $1
+            order by u.created_at desc
+            limit $2 offset $3
+        """, user_id, limit, offset)
+        total = await pool.fetchval("""
+            select count(*) from users u
+            where u.is_discoverable = true and u.telegram_id <> $1
+        """, user_id)
+    else:
+        rows = await pool.fetch("""
+            select
+              u.telegram_id, u.username, u.name, u.photo_url, u.created_at,
+              exists (
+                select 1 from user_contacts c2
+                where c2.user_id = u.telegram_id and c2.contact_tid = $1
+              ) as is_mutual
+            from user_contacts c
+            join users u on u.telegram_id = c.contact_tid
+            where c.user_id = $1 and u.is_discoverable = true
+            order by (u.username is null) asc, u.username asc nulls last, u.name asc nulls last
+            limit $2 offset $3
+        """, user_id, limit, offset)
+        total = await pool.fetchval("""
+            select count(*) from user_contacts c
+            join users u on u.telegram_id = c.contact_tid
+            where c.user_id = $1 and u.is_discoverable = true
+        """, user_id)
+
+    return {"items": [dict(r) for r in rows], "limit": limit, "offset": offset, "total": total}
+
+
+@router.get("/contacts/mutual")
+async def get_contacts_mutual(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user_id: int = Depends(_current_user_id),
+    pool: asyncpg.Pool = Depends(_get_pool),
+):
+    rows = await pool.fetch("""
+        select u.telegram_id, u.username, u.name, u.photo_url, u.created_at, true as is_mutual
+        from user_contacts c1
+        join user_contacts c2
+          on c2.user_id = c1.contact_tid and c2.contact_tid = c1.user_id
+        join users u on u.telegram_id = c1.contact_tid
+        where c1.user_id = $1 and u.is_discoverable = true
+        order by (u.username is null) asc, u.username asc nulls last, u.name asc nulls last
+        limit $2 offset $3
+    """, user_id, limit, offset)
+    total = await pool.fetchval("""
+        select count(*)
+        from user_contacts c1
+        join user_contacts c2
+          on c2.user_id = c1.contact_tid and c2.contact_tid = c1.user_id
+        join users u on u.telegram_id = c1.contact_tid
+        where c1.user_id = $1 and u.is_discoverable = true
+    """, user_id)
+    return {"items": [dict(r) for r in rows], "limit": limit, "offset": offset, "total": total}
+
+
+# Экспортируем для stream_gateway
+__all__ = ["_verify_webapp_init_data"]

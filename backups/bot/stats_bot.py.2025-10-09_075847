@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import html
+import logging
+from typing import Optional, Tuple, List
+
+import asyncpg
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes, AIORateLimiter
+)
+
+# ------------------------
+# Конфиг / окружение
+# ------------------------
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+PG_DSN = os.environ.get("PG_DSN") or os.environ.get("DATABASE_URL") or \
+         "postgresql://ogma:ogma_pass@127.0.0.1:5432/ogma"
+
+# Пул соединений создадим в application.bot_data[POOL_KEY]
+POOL_KEY = "pg_pool"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+log = logging.getLogger("ogma.bot")
+
+# ------------------------
+# Утилиты форматирования
+# ------------------------
+def esc(s: Optional[str]) -> str:
+    return html.escape(s or "")
+
+def _fmt_secs(total: int) -> str:
+    total = int(total or 0)
+    h, rem = divmod(total, 3600)
+    m, s   = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+def parse_args(text: str) -> Tuple[str, int]:
+    """
+    Разбор аргументов команд: /cmd [period] [limit]
+    period: all | 24h | 7d | 30d (по умолчанию 7d)
+    limit: целое 1..50 (по умолчанию 10)
+    """
+    parts = [p for p in (text or "").strip().split() if p]
+    args = parts[1:]
+    period = "7d"
+    limit = 10
+
+    if len(args) >= 1:
+        p = args[0].lower()
+        if p in {"all", "24h", "7d", "30d"}:
+            period = p
+        else:
+            try:
+                limit = max(1, min(50, int(p)))
+            except Exception:
+                pass
+
+    if len(args) >= 2:
+        try:
+            limit = max(1, min(50, int(args[1])))
+        except Exception:
+            pass
+
+    return period, limit
+
+def parse_period_and_limit(args: List[str]) -> Tuple[Optional[int], int]:
+    """
+    Для /user: принимает хвост аргументов после username.
+    Возвращает (days|None, limit). По умолчанию 30d и 10.
+    Примеры:
+      ["7d", "5"] -> (7, 5)
+      ["all"]     -> (None, 10)
+      ["20"]      -> (30, 20)
+    """
+    days: Optional[int] = 30
+    limit = 10
+    for a in args:
+        a = (a or "").lower()
+        if a in ("all", "*"):
+            days = None
+        elif a in {"24h", "7d", "30d"}:
+            if a == "24h":
+                days = 1
+            elif a == "7d":
+                days = 7
+            elif a == "30d":
+                days = 30
+        elif a.endswith("d") and a[:-1].isdigit():
+            days = int(a[:-1])
+        elif a.isdigit():
+            limit = int(a)
+    return days, max(1, min(50, limit))
+
+def where_period_sql(period: str) -> str:
+    """
+    Возвращает фрагмент WHERE для таблицы listening_seconds (по колонке day),
+    либо пустую строку для ALL.
+    """
+    if period == "all":
+        return ""
+    if period == "24h":
+        return "AND ls.day >= CURRENT_DATE - 1"
+    if period == "30d":
+        return "AND ls.day >= CURRENT_DATE - 30"
+    # default 7d:
+    return "AND ls.day >= CURRENT_DATE - 7"
+
+def fmt_header(title: str, period: str, limit: int) -> str:
+    p = {"all": "за всё время", "24h": "за 24 часа", "7d": "за 7 дней", "30d": "за 30 дней"}[period]
+    return f"<b>{esc(title)}</b>\n<i>{p}, top {limit}</i>\n"
+
+# ------------------------
+# SQL-запросы
+# ------------------------
+TOP_TRACKS_SQL = """
+SELECT t.id::text AS track_id,
+       t.title,
+       array_to_string(t.artists, ', ') AS artists,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN tracks t ON t.id = ls.track_id
+WHERE 1=1
+  {PERIOD}
+GROUP BY t.id, t.title, t.artists
+ORDER BY seconds_total DESC
+LIMIT $1;
+"""
+
+TOP_ARTISTS_SQL = """
+SELECT a.artist,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN tracks t ON t.id = ls.track_id
+CROSS JOIN LATERAL unnest(t.artists) AS a(artist)
+WHERE 1=1
+  {PERIOD}
+GROUP BY a.artist
+ORDER BY seconds_total DESC
+LIMIT $1;
+"""
+
+TOP_LISTENERS_SQL = """
+SELECT u.telegram_id AS user_id,
+       COALESCE(u.username,'—') AS username,
+       COALESCE(NULLIF(u.name,''),'') AS name,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN users u ON u.telegram_id = ls.user_id
+WHERE 1=1
+  {PERIOD}
+GROUP BY u.telegram_id, u.username, u.name
+ORDER BY seconds_total DESC
+LIMIT $1;
+"""
+
+ME_TRACKS_SQL = """
+SELECT t.id::text AS track_id,
+       t.title,
+       array_to_string(t.artists, ', ') AS artists,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN tracks t ON t.id = ls.track_id
+WHERE ls.user_id = $1
+  {PERIOD}
+GROUP BY t.id, t.title, t.artists
+ORDER BY seconds_total DESC
+LIMIT $2;
+"""
+
+ME_ARTISTS_SQL = """
+SELECT a.artist,
+       SUM(ls.seconds)::int AS seconds_total
+FROM listening_seconds ls
+JOIN tracks t ON t.id = ls.track_id
+CROSS JOIN LATERAL unnest(t.artists) AS a(artist)
+WHERE ls.user_id = $1
+  {PERIOD}
+GROUP BY a.artist
+ORDER BY seconds_total DESC
+LIMIT $2;
+"""
+
+# ------------------------
+# Хэндлеры команд
+# ------------------------
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "<b>OGMA — статистика прослушиваний</b>\n\n"
+        "Доступные команды:\n"
+        "• /me — ваш Telegram ID\n"
+        "• /top_tracks [period] [limit]\n"
+        "• /top_artists [period] [limit]\n"
+        "• /listeners [period] [limit]\n"
+        "• /me_tracks [period] [limit]\n"
+        "• /me_artists [period] [limit]\n"
+        "• /user @username [7d|30d|all] [limit]\n\n"
+        "<i>period:</i> all | 24h | 7d | 30d (по умолчанию 7d)\n"
+        "<i>limit:</i> 1..50 (по умолчанию 10)"
+    )
+    await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+async def cmd_me(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    text = f"<b>Ваш Telegram ID:</b> <code>{u.id}</code>\n" \
+           f"<b>username:</b> {esc('@'+u.username) if u.username else '—'}\n" \
+           f"<b>name:</b> {esc(u.full_name)}"
+    await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML)
+
+async def cmd_top_tracks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    period, limit = parse_args(update.message.text if update.message else "")
+    where = where_period_sql(period)
+    sql = TOP_TRACKS_SQL.format(PERIOD=where)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+
+    rows = await pool.fetch(sql, limit)
+    if not rows:
+        await update.effective_chat.send_message("Данных пока нет.", parse_mode=ParseMode.HTML)
+        return
+
+    out = [fmt_header("Топ треков", period, limit)]
+    for i, r in enumerate(rows, 1):
+        out.append(f"{i}. {esc(r['title'])} — {esc(r['artists'])}  <code>{r['seconds_total']}s</code>")
+    await update.effective_chat.send_message("\n".join(out), parse_mode=ParseMode.HTML)
+
+async def cmd_top_artists(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    period, limit = parse_args(update.message.text if update.message else "")
+    where = where_period_sql(period)
+    sql = TOP_ARTISTS_SQL.format(PERIOD=where)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+
+    rows = await pool.fetch(sql, limit)
+    if not rows:
+        await update.effective_chat.send_message("Данных пока нет.", parse_mode=ParseMode.HTML)
+        return
+
+    out = [fmt_header("Топ артистов", period, limit)]
+    for i, r in enumerate(rows, 1):
+        out.append(f"{i}. {esc(r['artist'])}  <code>{r['seconds_total']}s</code>")
+    await update.effective_chat.send_message("\n".join(out), parse_mode=ParseMode.HTML)
+
+async def cmd_listeners(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    period, limit = parse_args(update.message.text if update.message else "")
+    where = where_period_sql(period)
+    sql = TOP_LISTENERS_SQL.format(PERIOD=where)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+
+    rows = await pool.fetch(sql, limit)
+    if not rows:
+        await update.effective_chat.send_message("Данных пока нет.", parse_mode=ParseMode.HTML)
+        return
+
+    out = [fmt_header("Топ слушателей", period, limit)]
+    for i, r in enumerate(rows, 1):
+        uname = (f"@{r['username']}" if r['username'] and r['username'] != '—' else '—')
+        name = r['name'] or ''
+        out.append(
+            f"{i}. <code>{r['user_id']}</code> {esc(uname)} {esc(name)}  "
+            f"<code>{r['seconds_total']}s</code>"
+        )
+    await update.effective_chat.send_message("\n".join(out), parse_mode=ParseMode.HTML)
+
+async def cmd_me_tracks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    period, limit = parse_args(update.message.text if update.message else "")
+    where = where_period_sql(period)
+    sql = ME_TRACKS_SQL.format(PERIOD=where)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+
+    rows = await pool.fetch(sql, user_id, limit)
+    if not rows:
+        await update.effective_chat.send_message("Для вашего аккаунта ещё нет данных.", parse_mode=ParseMode.HTML)
+        return
+
+    out = [fmt_header("Ваши треки по секундам", period, limit)]
+    for i, r in enumerate(rows, 1):
+        out.append(f"{i}. {esc(r['title'])} — {esc(r['artists'])}  <code>{r['seconds_total']}s</code>")
+    await update.effective_chat.send_message("\n".join(out), parse_mode=ParseMode.HTML)
+
+async def cmd_me_artists(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    period, limit = parse_args(update.message.text if update.message else "")
+    where = where_period_sql(period)
+    sql = ME_ARTISTS_SQL.format(PERIOD=where)
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+
+    rows = await pool.fetch(sql, user_id, limit)
+    if not rows:
+        await update.effective_chat.send_message("Для вашего аккаунта ещё нет данных.", parse_mode=ParseMode.HTML)
+        return
+
+    out = [fmt_header("Ваши артисты по секундам", period, limit)]
+    for i, r in enumerate(rows, 1):
+        out.append(f"{i}. {esc(r['artist'])}  <code>{r['seconds_total']}s</code>")
+    await update.effective_chat.send_message("\n".join(out), parse_mode=ParseMode.HTML)
+
+# ------------------------
+# /user | /who | /u — статистика по username
+# ------------------------
+async def cmd_user(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg:
+        return
+    args = ctx.args or []
+    if not args:
+        await msg.reply_text(
+            "Использование: /user <username|tg_id> [7d|30d|all|24h] [limit]\n"
+            "Примеры:\n"
+            "  /user @nickname 7d 10\n"
+            "  /who nickname all 20\n"
+            "  /u 566676200 30d 15"
+        )
+        return
+
+    first = args[0]
+    username = None
+    tg_id: Optional[int] = None
+
+    if first.lstrip("@").isdigit():
+        tg_id = int(first.lstrip("@"))
+    else:
+        username = first.lstrip("@")
+
+    days, limit = parse_period_and_limit(args[1:])
+    pool: asyncpg.Pool = ctx.bot_data[POOL_KEY]
+
+    async with pool.acquire() as con:
+        if tg_id is not None:
+            u = await con.fetchrow(
+                "SELECT telegram_id, username, name FROM users WHERE telegram_id=$1 LIMIT 1",
+                tg_id,
+            )
+        else:
+            u = await con.fetchrow(
+                "SELECT telegram_id, username, name FROM users WHERE lower(username)=lower($1) LIMIT 1",
+                username,
+            )
+
+        if not u:
+            await msg.reply_text("Пользователь не найден.")
+            return
+
+        uid = u["telegram_id"]
+
+        # total seconds за период
+        if days is None:
+            total = await con.fetchval(
+                "SELECT COALESCE(SUM(seconds),0) FROM listening_seconds WHERE user_id=$1",
+                uid,
+            )
+        elif days == 1:  # 24h
+            total = await con.fetchval(
+                "SELECT COALESCE(SUM(seconds),0) FROM listening_seconds WHERE user_id=$1 AND day >= CURRENT_DATE - 1",
+                uid,
+            )
+        else:
+            total = await con.fetchval(
+                "SELECT COALESCE(SUM(seconds),0) FROM listening_seconds WHERE user_id=$1 AND day >= CURRENT_DATE - $2::int",
+                uid, days,
+            )
+
+        # топ артистов и треков
+        if days is None:
+            top_art = await con.fetch(
+                """
+                SELECT a.artist AS name, SUM(ls.seconds)::int AS sec
+                FROM listening_seconds ls
+                JOIN tracks t ON t.id = ls.track_id
+                CROSS JOIN LATERAL unnest(t.artists) AS a(artist)
+                WHERE ls.user_id = $1
+                GROUP BY a.artist
+                ORDER BY sec DESC
+                LIMIT $2
+                """,
+                uid, limit,
+            )
+            top_tracks = await con.fetch(
+                """
+                SELECT t.title, array_to_string(t.artists, ', ') AS artists, SUM(ls.seconds)::int AS sec
+                FROM listening_seconds ls
+                JOIN tracks t ON t.id = ls.track_id
+                WHERE ls.user_id = $1
+                GROUP BY t.title, t.artists
+                ORDER BY sec DESC
+                LIMIT $2
+                """,
+                uid, limit,
+            )
+        else:
+            period_cond = "AND ls.day >= CURRENT_DATE - $2::int"
+            top_art = await con.fetch(
+                f"""
+                SELECT a.artist AS name, SUM(ls.seconds)::int AS sec
+                FROM listening_seconds ls
+                JOIN tracks t ON t.id = ls.track_id
+                CROSS JOIN LATERAL unnest(t.artists) AS a(artist)
+                WHERE ls.user_id = $1
+                  {period_cond}
+                GROUP BY a.artist
+                ORDER BY sec DESC
+                LIMIT $3
+                """,
+                uid, days, limit,
+            )
+            top_tracks = await con.fetch(
+                f"""
+                SELECT t.title, array_to_string(t.artists, ', ') AS artists, SUM(ls.seconds)::int AS sec
+                FROM listening_seconds ls
+                JOIN tracks t ON t.id = ls.track_id
+                WHERE ls.user_id = $1
+                  {period_cond}
+                GROUP BY t.title, t.artists
+                ORDER BY sec DESC
+                LIMIT $3
+                """,
+                uid, days, limit,
+            )
+
+    header = f"Статистика @{u['username'] or '—'}"
+    if u["name"]:
+        header += f" ({u['name']})"
+    period_label = "за всё время" if days is None else ("за 24 часа" if days == 1 else f"за {days} дн.")
+    lines = [f"<b>{esc(header)}</b>\n<i>{period_label}</i>\nВсего времени: <b>{_fmt_secs(total)}</b>"]
+
+    if top_art:
+        lines.append("\n<b>Топ артистов:</b>")
+        for i, a in enumerate(top_art, 1):
+            lines.append(f"{i}. {esc(a['name'])} — <code>{_fmt_secs(a['sec'])}</code>")
+
+    if top_tracks:
+        lines.append("\n<b>Топ треков:</b>")
+        for i, t in enumerate(top_tracks, 1):
+            lines.append(f"{i}. {esc(t['title'])} — {esc(t['artists'])} — <code>{_fmt_secs(t['sec'])}</code>")
+
+    text = "\n".join(lines)
+    if len(text) > 4096:
+        text = text[:4000] + "\n…"
+    await msg.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+# ------------------------
+# Инициализация/запуск
+# ------------------------
+async def on_start(app: Application):
+    # создаём пул к БД
+    app.bot_data[POOL_KEY] = await asyncpg.create_pool(dsn=PG_DSN, min_size=1, max_size=5)
+    log.info("DB pool ready")
+
+async def on_stop(app: Application):
+    pool: asyncpg.Pool = app.bot_data.get(POOL_KEY)
+    if pool:
+        await pool.close()
+
+def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+
+    application = Application.builder() \
+        .token(BOT_TOKEN) \
+        .rate_limiter(AIORateLimiter(max_retries=2)) \
+        .build()
+
+    # Команды
+    application.add_handler(CommandHandler(["start","help"], cmd_start))
+    application.add_handler(CommandHandler("me", cmd_me))
+    application.add_handler(CommandHandler("top_tracks", cmd_top_tracks))
+    application.add_handler(CommandHandler("top_artists", cmd_top_artists))
+    application.add_handler(CommandHandler("listeners", cmd_listeners))
+    application.add_handler(CommandHandler("me_tracks", cmd_me_tracks))
+    application.add_handler(CommandHandler("me_artists", cmd_me_artists))
+    application.add_handler(CommandHandler(["user", "who", "u"], cmd_user))
+
+    application.post_init = on_start
+    application.post_stop = on_stop
+
+    application.run_polling(close_loop=False)
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,116 @@
+// ========= DATASOURCE & GENERATOR =========
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL") // рекомендуется для migrate dev
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ========= СУЩЕСТВУЮЩИЕ ТАБЛИЦЫ (маппинг) =========
+
+// users (PRIMARY KEY: users.telegram_id BIGINT)
+model User {
+  telegramId BigInt    @id @map("telegram_id")
+  createdAt  DateTime? @map("created_at") @db.Timestamptz
+
+  // relations
+  playlists Playlist[] @relation("UserPlaylists")
+
+  @@map("users")
+}
+
+// tracks (PRIMARY KEY: tracks.id UUID DEFAULT gen_random_uuid())
+model Track {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tgMsgId      BigInt?  @map("tg_msg_id")
+  chatUsername String?  @map("chat_username")
+  title        String?
+  artists      String[] @db.Text
+  hashtags     String[] @db.Text
+  durationS    Int?     @map("duration_s")
+  mime         String?
+  sizeBytes    BigInt?  @map("size_bytes")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  caption      String?
+  docId        BigInt?  @map("doc_id")
+  accessHash   BigInt?  @map("access_hash")
+  fileRefB64   String?  @map("file_ref_b64")
+  dcId         Int?     @map("dc_id")
+
+  // relations
+  playlistItems PlaylistTrack[] @relation("TrackPlaylistItems")
+
+  // уже существующий уникальный индекс в БД
+  @@unique([chatUsername, tgMsgId], map: "tracks_chat_msg_unique")
+  @@map("tracks")
+}
+
+// playlists (PRIMARY KEY: playlists.id UUID DEFAULT gen_random_uuid())
+model Playlist {
+  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId  BigInt  @map("user_id")
+  title    String
+  kind     String  @default("custom")
+  isPublic Boolean @default(false) @map("is_public")
+
+  // === новые поля (добавочные) ===
+  handle               String?
+  isPrivate            Boolean @default(false) @map("is_private")
+  listenedSecondsTotal Int     @default(0) @map("listened_seconds_total")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // обратная связь к User (relation name должен совпадать)
+  owner User @relation("UserPlaylists", fields: [ownerId], references: [telegramId])
+
+  // relations
+  tracks         PlaylistTrack[] @relation("PlaylistItems")
+  accessRequests AccessRequest[]
+
+  // уникальные ограничения, уже существующие в БД
+  @@unique([ownerId, title], map: "playlists_user_title_unique")
+  @@unique([handle], map: "playlists_handle_key")
+  @@map("playlists")
+}
+
+// playlist_items (PRIMARY KEY: (playlist_id, track_id))
+model PlaylistTrack {
+  playlistId String   @map("playlist_id") @db.Uuid
+  trackId    String   @map("track_id") @db.Uuid
+  position   Int
+  addedAt    DateTime @default(now()) @map("added_at") @db.Timestamptz
+
+  // relations (однострочно; onDelete соответствует твоим FK: CASCADE)
+  playlist Playlist @relation(name: "PlaylistItems", fields: [playlistId], references: [id], onDelete: Cascade)
+  track    Track    @relation(name: "TrackPlaylistItems", fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@id([playlistId, trackId])
+  @@map("playlist_items")
+}
+
+// ========= НОВАЯ СУЩНОСТЬ (добавочная) =========
+
+model AccessRequest {
+  id          String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  playlistId  String              @map("playlist_id") @db.Uuid
+  requesterId BigInt              @map("requester_id")
+  status      AccessRequestStatus @default(PENDING)
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz
+
+  // связь (если хочешь тоже каскад — оставляем; иначе убери onDelete)
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+
+  // уникальность "одна заявка от пользователя на один плейлист"
+  @@unique([playlistId, requesterId])
+  @@map("playlist_access_requests")
+}
+
+enum AccessRequestStatus {
+  PENDING
+  APPROVED
+  DENIED
+}

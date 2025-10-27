@@ -1,0 +1,41 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - 'button "Открыть плейлист: MusicAlbum" [ref=e7]': MusicAlbum
+      - link "Профиль" [ref=e8] [cursor=pointer]:
+        - /url: "#/profile"
+    - textbox "Поиск по названию, артистам, хештегам…" [ref=e12]
+    - generic [ref=e13]: Загружаем…
+    - generic [ref=e15]:
+      - generic [ref=e16]:
+        - generic [ref=e23]: DU
+        - generic [ref=e25]: Dev User
+      - generic [ref=e26]:
+        - generic [ref=e27]:
+          - textbox "Поиск в плейлисте" [ref=e29]
+          - button "Создание публичного плейлиста — в разработке" [disabled] [ref=e30]:
+            - img [ref=e31]
+        - generic [ref=e33]: Создание публичного плейлиста — в разработке
+      - generic [ref=e35]: У вас пока нет плейлистов.
+      - generic [ref=e38]: Загружаем…
+  - generic [ref=e40]:
+    - generic [ref=e43]:
+      - generic [ref=e44]:
+        - button "Артист" [disabled]
+      - generic [ref=e46]:
+        - generic [ref=e47]: 0:00
+        - generic [ref=e54]: "-0:00"
+    - generic [ref=e55]:
+      - generic [ref=e57]:
+        - button "Предыдущий" [disabled]:
+          - img
+      - generic [ref=e59]:
+        - button "Пауза" [disabled]:
+          - img
+      - generic [ref=e61]:
+        - button "Следующий" [disabled]:
+          - img
+```

@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+import os
+import io
+import re
+import asyncio
+import logging, base64
+from typing import Optional, AsyncIterator, Tuple
+
+import asyncpg
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse, PlainTextResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+from telethon import TelegramClient
+from telethon.errors import FloodWaitError, FileReferenceExpiredError, AuthKeyError
+from telethon.tl.types import InputDocumentFileLocation
+from telethon.tl.functions.messages import GetMessagesRequest
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Config
+# ──────────────────────────────────────────────────────────────────────────────
+
+load_dotenv("/home/ogma/ogma/stream/.env")
+
+PG_DSN = os.environ["PG_DSN"]
+
+API_ID = int(os.environ["TELEGRAM_API_ID"])
+API_HASH = os.environ["TELEGRAM_API_HASH"]
+PHONE = os.environ.get("TELEGRAM_PHONE")  # только для инфо
+SESSION_PATH = os.path.expanduser(os.environ["TELEGRAM_SESSION"])
+
+HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8082"))
+
+CACHE_DIR = os.environ.get("CACHE_DIR", "/home/ogma/ogma/stream/media-cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# App + globals
+# ──────────────────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="OGMA Stream Gateway", version="1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=False,
+    allow_methods=["GET", "HEAD", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+log = logging.getLogger("ogma.stream")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+pool: Optional[asyncpg.Pool] = None
+tg: Optional[TelegramClient] = None
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Utilities
+# ──────────────────────────────────────────────────────────────────────────────
+
+def cache_path_for(track_id: str) -> str:
+    sub = os.path.join(CACHE_DIR, track_id[:2])
+    os.makedirs(sub, exist_ok=True)
+    return os.path.join(sub, f"{track_id}.bin")
+
+def sanitize_filename(name: str) -> str:
+    # очень простой санитайзер
+    name = re.sub(r'[\\/*?:"<>|]+', "_", name).strip()
+    return name or "track"
+
+def parse_http_range(hdr: Optional[str], file_size: int) -> Tuple[int, int, bool]:
+    """
+    Возвращает (start, end, is_partial).
+    Поддерживает:
+      - bytes=START-END
+      - bytes=START-
+      - bytes=-SUFFIX
+    """
+    if not hdr or not hdr.startswith("bytes="):
+        return 0, file_size - 1, False
+
+    spec = hdr[6:].strip()
+    if "," in spec:
+        # Мульти-диапазоны не поддерживаем
+        raise HTTPException(416, "Multiple ranges not supported")
+
+    if spec.startswith("-"):
+        # suffix
+        try:
+            length = int(spec[1:])
+        except ValueError:
+            raise HTTPException(416, "Invalid Range")
+        if length <= 0:
+            raise HTTPException(416, "Invalid Range")
+        start = max(0, file_size - length)
+        end = file_size - 1
+        return start, end, True
+
+    if "-" in spec:
+        start_s, end_s = spec.split("-", 1)
+        try:
+            start = int(start_s)
+        except ValueError:
+            raise HTTPException(416, "Invalid Range")
+        if end_s:
+            try:
+                end = int(end_s)
+            except ValueError:
+                raise HTTPException(416, "Invalid Range")
+        else:
+            end = file_size - 1
+        if start > end or start < 0 or end >= file_size:
+            raise HTTPException(416, "Invalid Range")
+        return start, end, True
+
+    raise HTTPException(416, "Invalid Range")
+
+async def fetch_track_row(track_id: str) -> Optional[asyncpg.Record]:
+    sql = """
+      SELECT
+        id::text,
+        chat_username,
+        tg_msg_id,
+        title,
+        mime,
+        COALESCE(size_bytes, 0) AS size_bytes,
+        tg_document_id,
+        tg_access_hash,
+        tg_file_ref,
+        tg_dc_id
+      FROM tracks
+      WHERE id = $1::uuid
+      LIMIT 1;
+    """
+    async with pool.acquire() as con:
+        return await con.fetchrow(sql, track_id)
+
+async def update_file_ref(track_id: str, doc_id: int, access_hash: int, file_ref: bytes, dc_id: int,
+                          size_bytes: Optional[int] = None, mime: Optional[str] = None) -> None:
+    sql = """
+      UPDATE tracks
+      SET tg_document_id = $2,
+          tg_access_hash = $3,
+          tg_file_ref    = $4,
+          tg_dc_id       = $5,
+          size_bytes     = COALESCE($6, size_bytes),
+          mime           = COALESCE($7, mime)
+      WHERE id = $1::uuid
+    """
+    async with pool.acquire() as con:
+        await con.execute(sql, track_id, doc_id, access_hash, file_ref, dc_id, size_bytes, mime)
+
+async def refresh_file_reference(row: asyncpg.Record) -> asyncpg.Record:
+    """
+    Если file_reference просрочен — получаем сообщение ещё раз и обновляем поля.
+    """
+    chat = row["chat_username"]
+    msg_id = row["tg_msg_id"]
+    if not chat or not msg_id:
+        raise HTTPException(500, "Missing chat or msg id to refresh file reference")
+
+    # Получаем сообщение; используем Telethon high-level
+    msg = await tg.get_messages(chat, ids=msg_id)
+    if not msg or not msg.document:
+        raise HTTPException(404, "Original message or document not found")
+
+    doc = msg.document  # telethon.tl.types.Document
+    await update_file_ref(
+        track_id=row["id"],
+        doc_id=doc.id,
+        access_hash=doc.access_hash,
+        file_ref=doc.file_reference,
+        dc_id=doc.dc_id or row["tg_dc_id"] or 0,
+        size_bytes=getattr(doc, "size", None),
+        mime=doc.mime_type or row["mime"],
+    )
+    # вернём обновлённый row
+    return await fetch_track_row(row["id"])
+
+async def telegram_bytes(
+    row: asyncpg.Record, start: int, end: int, write_to: Optional[io.BufferedWriter] = None
+) -> AsyncIterator[bytes]:
+    """
+    Читает байты документа через MTProto (GetFile), отдаёт генератором.
+    При необходимости обновляет file_reference.
+    Если write_to задан — дублирует поток в файл (для кеша).
+    """
+    assert tg is not None
+
+    # 1) сначала берём сырые значения, без int()
+    doc_id = row["tg_document_id"]
+    access_hash = row["tg_access_hash"]
+    file_ref = row["tg_file_ref"] or b""
+
+    # если чего-то не хватает — освежаем ссылку
+    if not (doc_id and access_hash and file_ref):
+        row = await refresh_file_reference(row)
+        doc_id = row["tg_document_id"]
+        access_hash = row["tg_access_hash"]
+        file_ref = row["tg_file_ref"] or b""
+
+    # теперь безопасно приводим типы
+    doc_id = int(doc_id)
+    access_hash = int(access_hash)
+    file_ref = bytes(file_ref)
+
+    loc = InputDocumentFileLocation(
+        id=doc_id, access_hash=access_hash, file_reference=file_ref, thumb_size=""
+    )
+
+    offset = start
+    remaining = end - start + 1
+    CHUNK = 512 * 1024  # 512KiB
+
+    # импортируем тут, чтобы избежать путаницы с tg.upload.GetFileRequest
+    from telethon.tl.functions.upload import GetFileRequest
+
+    while remaining > 0:
+        req = min(CHUNK, remaining)
+        try:
+            res = await tg(GetFileRequest(
+                location=loc, offset=offset, limit=req, precise=True, cdn_supported=True
+            ))
+        except FileReferenceExpiredError:
+            # обновляем file_reference и пробуем снова с тем же offset
+            row = await refresh_file_reference(row)
+            file_ref = bytes(row["tg_file_ref"] or b"")
+            loc = InputDocumentFileLocation(
+                id=doc_id, access_hash=access_hash, file_reference=file_ref, thumb_size=""
+            )
+            continue
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds + 1)
+            continue
+
+        chunk = bytes(getattr(res, "bytes", b""))
+        if not chunk:
+            break
+
+        # откусываем лишнее, если пришло больше
+        if len(chunk) > remaining:
+            chunk = chunk[:remaining]
+
+        if write_to:
+            write_to.write(chunk)
+
+        yield chunk
+        offset += len(chunk)
+        remaining -= len(chunk)
+
+async def file_bytes(path: str, start: int, end: int) -> AsyncIterator[bytes]:
+    CHUNK = 256 * 1024
+    with open(path, "rb") as f:
+        f.seek(start)
+        left = end - start + 1
+        while left > 0:
+            data = f.read(min(CHUNK, left))
+            if not data:
+                break
+            yield data
+            left -= len(data)
+
+def common_headers(mime: str, file_size: int, start: int, end: int, is_partial: bool) -> dict:
+    length = end - start + 1
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": mime or "audio/mpeg",
+        "Content-Length": str(length),
+    }
+    if is_partial:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    return headers
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Startup / Shutdown
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def _startup():
+    global pool, tg
+    log.info("Starting OGMA Stream Gateway...")
+    pool = await asyncpg.create_pool(PG_DSN, min_size=1, max_size=5)
+
+    tg = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+    await tg.connect()
+    if not await tg.is_user_authorized():
+        # Для первого логина запустите вручную в TTY (нужно ввести код).
+        log.error("Telegram session is not authorized. Run interactively once to sign in.")
+        # Останавливаем приложение, чтобы systemd перезапускал после авторизации
+        raise RuntimeError("Telegram session unauthorized")
+
+    log.info("Startup complete.")
+
+@app.on_event("shutdown")
+async def _shutdown():
+    if tg:
+        await tg.disconnect()
+    if pool:
+        await pool.close()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    ok_db = False
+    ok_tg = False
+    try:
+        async with pool.acquire() as con:
+            v = await con.fetchval("select 1;")
+            ok_db = (v == 1)
+    except Exception:
+        ok_db = False
+    try:
+        ok_tg = tg is not None and tg.is_connected()
+    except Exception:
+        ok_tg = False
+    return {"postgres": ok_db, "telegram": ok_tg}
+
+async def serve_track(track_id: str, request: Request, as_download: bool) -> Response:
+    row = await fetch_track_row(track_id)
+    if not row:
+        raise HTTPException(404, "Track not found")
+
+    size = int(row["size_bytes"] or 0)
+    if size <= 0:
+        # Попробуем обновить мету через refresh (часто там подтянется size/mime)
+        row = await refresh_file_reference(row)
+        size = int(row["size_bytes"] or 0)
+        if size <= 0:
+            raise HTTPException(500, "Track size is unknown")
+
+    mime = (row["mime"] or "audio/mpeg").strip()
+    title = (row["title"] or "track").strip()
+
+    rng = request.headers.get("Range")
+    start, end, is_partial = parse_http_range(rng, size)
+
+    # ── Префлайт: убедиться, что есть TG-поля ДО отправки заголовков ──
+    if not (row["tg_document_id"] and row["tg_access_hash"] and row["tg_file_ref"]):
+        # Если не получится освежить — вернём 404/500 до старта ответа
+        row = await refresh_file_reference(row)
+
+    # Кэш на диск
+    cpath = cache_path_for(track_id)
+    use_cache = os.path.exists(cpath) and os.path.getsize(cpath) == size
+
+    headers = common_headers(mime, size, start, end, is_partial)
+    if as_download:
+        fname = sanitize_filename(title)
+        ext = ".mp3" if mime == "audio/mpeg" else ""
+        headers["Content-Disposition"] = f'attachment; filename="{fname}{ext}"'
+
+    status = 206 if is_partial else 200
+
+    if use_cache:
+        # Из файла можно безопасно указывать Content-Length
+        stream = file_bytes(cpath, start, end)
+        return StreamingResponse(stream, status_code=status, headers=headers)
+    else:
+        # Для лайв-стрима убираем Content-Length (chunked), чтобы не было "remaining to read"
+        headers.pop("Content-Length", None)
+
+        write_to = None
+        temp_path = cpath + ".part"
+        if start == 0 and end == size - 1:
+            write_to = open(temp_path, "wb")
+
+        async def gen():
+            sent = 0
+            try:
+                async for chunk in telegram_bytes(row, start, end, write_to):
+                    sent += len(chunk)
+                    yield chunk
+            except HTTPException as e:
+                # Не пробрасываем наружу после старта ответа — тихо завершаем поток
+                log.warning("telegram http-exception during stream id=%s: %s", track_id, e)
+                return
+            except Exception as e:
+                log.exception("stream error id=%s: %s", track_id, e)
+                return
+            finally:
+                expected = end - start + 1
+                log.info(
+                    "stream done id=%s range=%d-%d sent=%d expected=%d",
+                    track_id, start, end, sent, expected
+                )
+                if write_to:
+                    try:
+                        write_to.flush()
+                        write_to.close()
+                        if sent == expected and start == 0 and end == size - 1:
+                            os.replace(temp_path, cpath)   # докатываем .part в кэш
+                        else:
+                            try:
+                                os.remove(temp_path)       # частичный/ошибка — чистим .part
+                            except FileNotFoundError:
+                                pass
+                    except Exception as e2:
+                        log.warning("cache finalize error: %s", e2)
+
+        return StreamingResponse(gen(), status_code=status, headers=headers)
+
+@app.get("/stream/{track_id}")
+async def http_stream(track_id: str, request: Request):
+    return await serve_track(track_id, request, as_download=False)
+
+@app.get("/download/{track_id}")
+async def http_download(track_id: str, request: Request):
+    return await serve_track(track_id, request, as_download=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Entrypoint
+# ──────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=False)
+
+@app.head("/stream/{track_id}")
+async def http_stream_head(track_id: str, request: Request):
+    row = await fetch_track_row(track_id)
+    if not row:
+        raise HTTPException(404, "Track not found")
+
+    size = int(row["size_bytes"] or 0)
+    mime = (row["mime"] or "audio/mpeg").strip()
+
+    # Если размера нет — аккуратно попробуем обновить мету,
+    # но без стриминга и без падения ответа.
+    if size <= 0:
+        try:
+            row = await refresh_file_reference(row)
+            size = int(row["size_bytes"] or 0)
+        except Exception:
+            return Response(status_code=200, headers={
+                "Accept-Ranges": "bytes",
+                "Content-Type": mime,
+            })
+
+    rng = request.headers.get("Range")
+    start, end, is_partial = parse_http_range(rng, size)
+    headers = common_headers(mime, size, start, end, is_partial)
+    status = 206 if is_partial else 200
+    return Response(status_code=status, headers=headers)
+
+
+@app.head("/download/{track_id}")
+async def http_download_head(track_id: str, request: Request):
+    row = await fetch_track_row(track_id)
+    if not row:
+        raise HTTPException(404, "Track not found")
+
+    size = int(row["size_bytes"] or 0)
+    mime = (row["mime"] or "audio/mpeg").strip()
+    title = (row["title"] or "track").strip()
+
+    if size <= 0:
+        try:
+            row = await refresh_file_reference(row)
+            size = int(row["size_bytes"] or 0)
+        except Exception:
+            # Минимальные заголовки даже если размер не узнали
+            resp = Response(status_code=200, headers={
+                "Accept-Ranges": "bytes",
+                "Content-Type": mime,
+            })
+            fname = sanitize_filename(title)
+            ext = ".mp3" if mime == "audio/mpeg" else ""
+            resp.headers["Content-Disposition"] = f'attachment; filename="{fname}{ext}"'
+            return resp
+
+    rng = request.headers.get("Range")
+    start, end, is_partial = parse_http_range(rng, size)
+    headers = common_headers(mime, size, start, end, is_partial)
+    fname = sanitize_filename(title)
+    ext = ".mp3" if mime == "audio/mpeg" else ""
+    headers["Content-Disposition"] = f'attachment; filename="{fname}{ext}"'
+    status = 206 if is_partial else 200
+    return Response(status_code=status, headers=headers)

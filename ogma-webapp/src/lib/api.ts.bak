@@ -1,0 +1,185 @@
+import type { Track } from "@/types/types";
+
+// src/lib/api.ts
+export const API_BASE: string = import.meta.env.VITE_API_BASE ?? "/api";
+const BOT: string = import.meta.env.VITE_BOT_USERNAME || "OGMusicAlbum_Bot";
+
+// Единая проверка "можно в браузере без TG"
+function allowBrowserAuth(): boolean {
+  try {
+    const qp = new URLSearchParams(location.search);
+    return (
+      import.meta.env.DEV ||
+      import.meta.env.VITE_ALLOW_BROWSER === "1" ||
+      qp.has("noauth")
+    );
+  } catch {
+    return false;
+  }
+}
+
+
+/** Приклеить tg initData как query-параметр, чтобы <audio> тоже «знал» пользователя */
+function withInit(url: string): string {
+  const init = getInitData();
+  if (!init) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}init=${encodeURIComponent(init)}`;
+}
+
+export function streamUrl(id: string): string {
+  const base = `${API_BASE}/stream/${encodeURIComponent(String(id))}`;
+  return withInit(base);
+}
+
+/** URL для стрима по msgId+chat (предпочтительно), с фолбэком на uuid */
+export function streamUrlFor(t: Pick<Track, "id" | "chat" | "msgId">): string {
+  if (t?.chat && t?.msgId) {
+    const byMsg = `${API_BASE}/stream/by-msg/${encodeURIComponent(String(t.msgId))}?chat=${encodeURIComponent(
+      t.chat.replace(/^@/, "")
+    )}`;
+    return withInit(byMsg);
+  }
+  return streamUrl(String(t.id));
+}
+
+/** Получить Telegram initData из WebApp/URL, либо пустую строку */
+export function getInitData(): string {
+  try {
+    const w = (window as any);
+    const direct = w?.Telegram?.WebApp?.initData;
+    if (typeof direct === "string" && direct.length > 0) return direct;
+
+    const fromHash = new URLSearchParams(location.hash.replace(/^#/, "")).get("tgWebAppData");
+    if (fromHash) return fromHash;
+
+    const fromSearch = new URLSearchParams(location.search).get("tgWebAppData");
+    return fromSearch || "";
+  } catch {
+    return "";
+  }
+}
+
+/** Мгновенный перевод пользователя в мини-апп Telegram */
+export function ensureTelegramAuth(): never | void {
+  const init = getInitData();
+  if (init) return; // уже в WebApp — всё ок
+
+  const deeplink = `https://t.me/${BOT}?startapp=app`;
+  // пробуем через SDK (если он есть)
+  try {
+    (window as any)?.Telegram?.WebApp?.openTelegramLink?.(deeplink);
+  } catch { }
+  // гарантирующий фолбэк
+  location.href = deeplink;
+  // дальше выполнение не важно
+}
+
+/** В DEV мы это больше не используем, но оставлю «пустышку» на всякий */
+function getDevHeaders(): Record<string, string> {
+  try {
+    const qp = new URLSearchParams(location.search);
+    const allow =
+      import.meta.env.DEV ||
+      import.meta.env.VITE_ALLOW_BROWSER === '1' ||
+      qp.has('noauth');
+
+    if (allow) {
+      // backend читает ИМЕННО X-Debug-User-Id при ALLOW_DEBUG_HEADERS=1
+      return {
+        'X-Debug-User-Id': '12345',
+        // опционально — красиво покажем имя в /api/me
+        'X-Debug-Username': 'devuser',
+        'X-Debug-Name': 'Dev User',
+      };
+    }
+  } catch { }
+  return {};
+}
+
+
+export async function apiGet<T>(
+  path: string,
+  opts: { timeoutMs?: number } = {}
+): Promise<T> {
+  const url = path.startsWith("http")
+    ? path
+    : `${API_BASE}${path.startsWith("/") ? "" : "/"}${path}`;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 15000);
+
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+
+    // добавляем Telegram initData, если есть (для API-запросов)
+    const initData = getInitData();
+    if (initData) headers["X-Telegram-Init-Data"] = initData;
+
+    Object.assign(headers, getDevHeaders());
+
+    const r = await fetch(url, {
+      signal: ctrl.signal,
+      credentials: "include",
+      headers,
+    });
+
+    if (r.status === 401) {
+      // В DEV/браузере не уводим в Telegram, только в проде
+      const qp = new URLSearchParams(location.search);
+      const ALLOW_BROWSER =
+        import.meta.env.DEV ||
+        import.meta.env.VITE_ALLOW_BROWSER === '1' ||
+        qp.has('noauth');
+      if (!ALLOW_BROWSER) ensureTelegramAuth();
+      throw new Error("Unauthorized");
+    }
+
+    if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+    return (await r.json()) as T;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+
+// -------- artists API --------
+export type ArtistsSummary = {
+  top: { artist: string; seconds_total: number }[];
+  ru: string[];
+  en: string[];
+  chat: string;
+};
+
+export async function fetchArtistsSummary(top = 3, chat = "OGMA_archive") {
+  return apiGet<ArtistsSummary>(`/catalog/artists/summary?top=${top}&chat=${encodeURIComponent(chat)}`);
+}
+
+export async function fetchArtistTracks(artist: string, chat = "OGMA_archive") {
+  return apiGet<{ artist: string; chat: string; count: number; items: Track[] }>(
+    `/catalog/artist/tracks?artist=${encodeURIComponent(artist)}&chat=${encodeURIComponent(chat)}`
+  );
+}
+
+
+const ENDPOINT_SEND = "/me/send";
+
+export async function sendTrackToMe(t: Pick<Track, "id" | "chat" | "msgId">) {
+  const initData = getInitData();
+  const body: any = {};
+  if (t.chat && t.msgId) {
+    body.chat = String(t.chat).replace(/^@/, "");
+    body.msg_id = t.msgId;
+  } else {
+    body.track_id = t.id;
+  }
+  await fetch(`${API_BASE}${ENDPOINT_SEND}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Telegram-Init-Data": initData,
+      ...getDevHeaders(),
+    },
+    body: JSON.stringify(body),
+    credentials: "include",
+  });
+}

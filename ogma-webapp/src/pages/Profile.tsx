@@ -457,6 +457,9 @@ export default function ProfilePage({ nowId, paused, embedded = false }: Profile
     );
   }
 
+  const HeaderBackground = headerBgKey ? backgroundMap[headerBgKey] : null;
+  const headerBackgroundKey = HeaderBackground ? `profile:${headerBgKey}` : "profile:fallback";
+
   return (
     <div className="max-w-3xl mx-auto space-y-4 player-safe">
       {/* Шапка */}
@@ -513,9 +516,11 @@ export default function ProfilePage({ nowId, paused, embedded = false }: Profile
 
         {/* Анимированный фон */}
         <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden="true">
-          {headerBgKey && backgroundMap[headerBgKey] ? (
+          {HeaderBackground ? (
             <>
-              {React.createElement(backgroundMap[headerBgKey], { className: "absolute inset-0" })}
+              <div className="absolute inset-0" key={headerBackgroundKey}>
+                <HeaderBackground />
+              </div>
               <div
                 className="absolute inset-0 pointer-events-none"
                 style={{ background: "radial-gradient(120% 75% at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.35) 100%)" }}

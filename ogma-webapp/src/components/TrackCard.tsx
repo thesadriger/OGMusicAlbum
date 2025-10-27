@@ -628,7 +628,10 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
           <div className="absolute inset-0 z-0 pointer-events-none">
             {/* фон-анимация */}
             <div className="absolute inset-0 pointer-events-none opacity-70">
-              <BackgroundComp className="absolute inset-0 pointer-events-none" {...bgExtraProps} />
+              <BackgroundComp
+                key={`${bgVersion}:${forceBgMode ?? ""}:${forceBgKey ?? ""}`}
+                {...bgExtraProps}
+              />
             </div>
 
             {/* СТЕКЛЯННЫЙ прогресс вместо bg-gray-500/50 */}

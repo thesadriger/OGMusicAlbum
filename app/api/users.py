@@ -244,15 +244,6 @@ async def _ensure_playlists_table(pool: asyncpg.Pool) -> None:
     alter table playlists alter column id set default gen_random_uuid();
     alter table playlists alter column handle drop not null;
 
-    alter table playlists add column if not exists user_id bigint not null references users(telegram_id) on delete cascade;
-    alter table playlists add column if not exists title text;
-    alter table playlists add column if not exists description text;
-    alter table playlists add column if not exists cover_url text;
-    alter table playlists add column if not exists handle text;
-    alter table playlists add column if not exists is_public boolean not null default false;
-    alter table playlists add column if not exists kind text not null default 'custom';
-    alter table playlists add column if not exists updated_at timestamptz default now();
-
     do $$
     begin
         if exists (
@@ -265,6 +256,15 @@ async def _ensure_playlists_table(pool: asyncpg.Pool) -> None:
             alter table playlists rename column owner_id to user_id;
         end if;
     end $$;
+
+    alter table playlists add column if not exists user_id bigint references users(telegram_id) on delete cascade;
+    alter table playlists add column if not exists title text;
+    alter table playlists add column if not exists description text;
+    alter table playlists add column if not exists cover_url text;
+    alter table playlists add column if not exists handle text;
+    alter table playlists add column if not exists is_public boolean not null default false;
+    alter table playlists add column if not exists kind text not null default 'custom';
+    alter table playlists add column if not exists updated_at timestamptz default now();
 
     alter table playlists alter column user_id set not null;
 

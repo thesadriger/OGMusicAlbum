@@ -67,7 +67,6 @@ async def search_tracks(
     *,
     playlist_limit: int = Query(10, ge=1, le=100, alias="playlist_limit"),
     playlist_offset: int = Query(0, ge=0, alias="playlist_offset"),
-    response: Response,
     pool: asyncpg.Pool = Depends(_get_pool),
 ):
     term = q.strip()

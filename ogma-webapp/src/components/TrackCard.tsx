@@ -174,11 +174,6 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     [t.id]);
   const already = inPlaylist(t.id);
 
-  // --- Таймер трека (мм:сс) ---
-  const audioEl = getAudio();
-  const hasDur = !!audioEl && Number.isFinite(audioEl.duration) && audioEl.duration > 0;
-  const showTimer = isActive && (hasDur || lastProgressRef.current > 0 || scrubbing);
-
   // --- выбор фоновой анимации React Bits (стабильно "случайно" по id трека) ---
   const BackgroundComp = useMemo<ComponentType<any>>(() => {
     // список без затенения верхнего объекта
@@ -708,7 +703,6 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
             trackId={t.id}
             isActive={!!isActive}
             getAudio={getAudio}
-            show={showTimer}
             scrubbing={scrubbing}
             scrubPct={scrubPct}
             lastProgressRef={lastProgressRef}
@@ -919,19 +913,87 @@ type TrackTimerProps = {
   trackId: string | number;
   isActive: boolean;
   getAudio: () => HTMLAudioElement | null;
-  show: boolean;
   scrubbing: boolean;
   scrubPct: number;
   lastProgressRef: MutableRefObject<number>;
 };
 
-function TrackTimer({ trackId, isActive, getAudio, show, scrubbing, scrubPct, lastProgressRef }: TrackTimerProps) {
+function TrackTimer({ trackId, isActive, getAudio, scrubbing, scrubPct, lastProgressRef }: TrackTimerProps) {
   const [mm, setMm] = useState(0);
   const [ss, setSs] = useState(0);
   const rafRef = useRef<number | null>(null);
   const durationRef = useRef(0);
   const lastSecRef = useRef(-1);
   const scrubbingRef = useRef(scrubbing);
+  const [visible, setVisible] = useState(false);
+
+  const evaluateVisibility = useCallback((audio?: HTMLAudioElement | null) => {
+    if (!isActive) {
+      setVisible(false);
+      return false;
+    }
+
+    const element = audio ?? getAudio();
+    const hasDur = !!element && Number.isFinite(element.duration) && element.duration > 0;
+    const hasProgress = !!element && element.currentTime > 0;
+    const shouldShow = isActive && (hasDur || hasProgress || lastProgressRef.current > 0 || scrubbingRef.current);
+
+    setVisible((prev) => (prev === shouldShow ? prev : shouldShow));
+    return shouldShow;
+  }, [getAudio, isActive, lastProgressRef]);
+
+  useEffect(() => {
+    scrubbingRef.current = scrubbing;
+    evaluateVisibility();
+  }, [scrubbing, evaluateVisibility]);
+
+  useEffect(() => {
+    evaluateVisibility();
+  }, [evaluateVisibility, trackId, isActive]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    let raf: number | null = null;
+    let cleanupAudio: (() => void) | null = null;
+    let cancelled = false;
+
+    const attach = (audio: HTMLAudioElement) => {
+      const handle = () => evaluateVisibility(audio);
+      const events: (keyof HTMLMediaElementEventMap)[] = [
+        "loadedmetadata",
+        "durationchange",
+        "timeupdate",
+        "play",
+        "progress",
+        "ended",
+      ];
+      events.forEach((evt) => audio.addEventListener(evt, handle));
+      handle();
+
+      cleanupAudio = () => {
+        events.forEach((evt) => audio.removeEventListener(evt, handle));
+      };
+    };
+
+    const lookup = () => {
+      if (cancelled) return;
+      const audio = getAudio();
+      if (audio) {
+        attach(audio);
+      } else {
+        raf = requestAnimationFrame(lookup);
+      }
+    };
+
+    lookup();
+
+    return () => {
+      cancelled = true;
+      if (raf != null) cancelAnimationFrame(raf);
+      cleanupAudio?.();
+    };
+  }, [getAudio, isActive, trackId, evaluateVisibility]);
 
   const applySeconds = useCallback((seconds: number, force = false) => {
     const clamped = Math.max(0, Math.floor(seconds));
@@ -944,10 +1006,6 @@ function TrackTimer({ trackId, isActive, getAudio, show, scrubbing, scrubPct, la
   }, []);
 
   useEffect(() => {
-    scrubbingRef.current = scrubbing;
-  }, [scrubbing]);
-
-  useEffect(() => {
     let running = false;
 
     const stop = () => {
@@ -958,7 +1016,7 @@ function TrackTimer({ trackId, isActive, getAudio, show, scrubbing, scrubPct, la
       }
     };
 
-    if (!show) {
+    if (!visible) {
       stop();
       return () => { stop(); };
     }
@@ -1024,10 +1082,10 @@ function TrackTimer({ trackId, isActive, getAudio, show, scrubbing, scrubPct, la
       audio.removeEventListener("pause", handlePause);
       audio.removeEventListener("ended", handleEnded);
     };
-  }, [trackId, show, isActive, getAudio, applySeconds, lastProgressRef]);
+  }, [trackId, visible, isActive, getAudio, applySeconds, lastProgressRef]);
 
   useEffect(() => {
-    if (!show) return;
+    if (!visible) return;
     if (scrubbing) {
       const audio = getAudio();
       const duration = durationRef.current || audio?.duration || 0;
@@ -1042,9 +1100,9 @@ function TrackTimer({ trackId, isActive, getAudio, show, scrubbing, scrubPct, la
       lastSecRef.current = -1;
       applySeconds(0, true);
     }
-  }, [show, scrubbing, scrubPct, isActive, getAudio, applySeconds, lastProgressRef]);
+  }, [visible, scrubbing, scrubPct, isActive, getAudio, applySeconds, lastProgressRef]);
 
-  if (!show) return null;
+  if (!visible) return null;
 
   return (
     <div

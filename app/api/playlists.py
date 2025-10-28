@@ -176,11 +176,24 @@ async def _ensure_db_user(con: asyncpg.Connection, uid: int) -> None:
 
 
 async def _ensure_default_playlist(con: asyncpg.Connection, user_id: int) -> str:
+    existing = await con.fetchrow(
+        """
+        SELECT id::text
+          FROM playlists
+         WHERE user_id = $1
+           AND title = 'Мой плейлист'
+         ORDER BY created_at ASC
+         LIMIT 1
+        """,
+        user_id,
+    )
+    if existing:
+        return existing["id"]
+
     row = await con.fetchrow(
         """
         INSERT INTO playlists (user_id, title, kind)
         VALUES ($1, 'Мой плейлист', 'custom')
-        ON CONFLICT (user_id, title) DO UPDATE SET title = EXCLUDED.title
         RETURNING id::text
         """,
         user_id,
@@ -337,10 +350,6 @@ async def create_playlist(
                 """
                 INSERT INTO playlists (user_id, title, kind, is_public, handle)
                 VALUES ($1, $2, 'custom', $3, $4)
-                ON CONFLICT (user_id, title) DO UPDATE
-                  SET is_public = EXCLUDED.is_public,
-                      handle     = COALESCE(EXCLUDED.handle, playlists.handle),
-                      updated_at = now()
                 RETURNING id::text, user_id, title, kind, is_public, handle, created_at, updated_at
                 """,
                 user_id, title, is_public, h,
@@ -351,7 +360,7 @@ async def create_playlist(
             text = f"{cn} {detail}".lower()
             if "handle" in text:
                 raise HTTPException(409, "Handle is already taken")
-            raise HTTPException(409, "Playlist with this title already exists for this user")
+            raise HTTPException(409, "Failed to create playlist")
 
     return dict(row)
 

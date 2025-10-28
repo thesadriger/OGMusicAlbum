@@ -1,7 +1,7 @@
 // src/lib/playlists.ts
 import type { Track } from "@/types/types";
 
-type Playlist = {
+export type Playlist = {
   id: string;
   user_id: number;
   title: string;
@@ -72,6 +72,22 @@ export async function createPlaylist(payload: {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
+  });
+}
+
+export async function updatePlaylist(
+  id: string,
+  payload: { title?: string; handle?: string | null; is_public?: boolean }
+) {
+  const body: Record<string, string | boolean | null> = {};
+  if (payload.title !== undefined) body.title = payload.title;
+  if (payload.handle !== undefined) body.handle = payload.handle;
+  if (payload.is_public !== undefined) body.is_public = payload.is_public;
+
+  return req<Playlist>(`/api/playlists/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
   });
 }
 

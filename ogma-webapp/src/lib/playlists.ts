@@ -84,11 +84,44 @@ export async function updatePlaylist(
   if (payload.handle !== undefined) body.handle = payload.handle;
   if (payload.is_public !== undefined) body.is_public = payload.is_public;
 
-  return req<Playlist>(`/api/playlists/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(body),
-  });
+  const url = `/api/playlists/${encodeURIComponent(id)}`;
+  const json = JSON.stringify(body);
+  const baseHeaders = authHeaders({ "Content-Type": "application/json" });
+
+  try {
+    return await req<Playlist>(url, {
+      method: "PATCH",
+      headers: baseHeaders,
+      body: json,
+    });
+  } catch (e: any) {
+    const msg = String(e?.detail || e?.message || "");
+    if (e?.status !== 405 && !/method not allowed/i.test(msg)) {
+      throw e;
+    }
+
+    try {
+      return await req<Playlist>(url, {
+        method: "PUT",
+        headers: baseHeaders,
+        body: json,
+      });
+    } catch (errPut: any) {
+      const msgPut = String(errPut?.detail || errPut?.message || "");
+      if (errPut?.status !== 405 && !/method not allowed/i.test(msgPut)) {
+        throw errPut;
+      }
+
+      return req<Playlist>(url, {
+        method: "POST",
+        headers: authHeaders({
+          "Content-Type": "application/json",
+          "X-HTTP-Method-Override": "PATCH",
+        }),
+        body: json,
+      });
+    }
+  }
 }
 
 export async function setPlaylistHandle(id: string, handle: string | null) {

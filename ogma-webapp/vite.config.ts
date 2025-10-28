@@ -46,7 +46,17 @@ function previewProxyPlugin(): Plugin {
       });
       enhanceProxyLogging(proxy);
 
-      server.middlewares.use("/api", (req, res) => {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url?.startsWith("/api")) {
+          next();
+          return;
+        }
+
+        const originalUrl = (req as typeof req & { originalUrl?: string }).originalUrl;
+        if (originalUrl) {
+          req.url = originalUrl;
+        }
+
         proxy.web(req, res, undefined, (err) => {
           console.error("[proxy error]", req?.url, err?.message);
           if (!res.headersSent) {

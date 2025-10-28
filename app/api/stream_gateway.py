@@ -685,9 +685,8 @@ async def stream_by_msg(
     request: Request,
     chat: str = Query(..., description="username канала, можно с @"),
 ):
-    log.error("### OGMA DEBUG ENTER stream_by_msg chat=%s msg_id=%s", chat, msg_id)
-    # 1. нормализуем имя канала
-    chat_username = (chat or "").strip().lstrip("@").lower()
+    # 1. нормализуем имя канала (без насильного приведения к lower — Telegram username чувствителен к кейсу)
+    chat_username = (chat or "").strip().lstrip("@")
     if not chat_username:
         raise HTTPException(
             status_code=400,
@@ -803,8 +802,6 @@ async def stream_by_msg(
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         headers["Content-Length"] = str(end - start + 1)
 
-        log.error("### OGMA DEBUG stream_by_msg ACTIVE code is running for chat=%s msg_id=%s", chat_username, msg_id)
-
         return StreamingResponse(
             body(),
             status_code=206,
@@ -813,9 +810,6 @@ async def stream_by_msg(
         )
     else:
         headers["Content-Length"] = str(size)
-
-        log.error("### OGMA DEBUG stream_by_msg ACTIVE code is running for chat=%s msg_id=%s", chat_username, msg_id)
-
         return StreamingResponse(
             body(),
             status_code=200,
@@ -830,7 +824,7 @@ async def head_stream_by_msg(
     request: Request,
     chat: str = Query(..., description="username канала, можно с @"),
 ):
-    chat_username = (chat or "").strip().lstrip("@").lower()
+    chat_username = (chat or "").strip().lstrip("@")
     if not chat_username:
         raise HTTPException(
             status_code=400,

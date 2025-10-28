@@ -35,6 +35,13 @@ create table if not exists playlist_listening_totals (
   updated_at  timestamptz not null default now()
 );
 create index if not exists playlist_listening_totals_updated_idx on playlist_listening_totals (updated_at desc);
+
+create table if not exists playlist_owner_listening_totals (
+  user_id    bigint primary key references users(telegram_id) on delete cascade,
+  seconds    bigint not null default 0 check (seconds >= 0),
+  updated_at timestamptz not null default now()
+);
+create index if not exists playlist_owner_listening_totals_updated_idx on playlist_owner_listening_totals (updated_at desc);
 """
 
 

@@ -9,7 +9,7 @@ import asyncpg
 import uuid
 
 # Берём готовые хелперы авторизации и резолва юзера
-from app.api.stream_gateway import _maybe_user_id
+from app.api.auth_shared import resolve_user_id
 
 router = APIRouter()
 
@@ -31,6 +31,10 @@ class ListenIn(BaseModel):
     playlist_id: Optional[str] = Field(
         None,
         description="UUID of the playlist the track is played from"
+    )
+    playlist_handle: Optional[str] = Field(
+        None,
+        description="Handle (@name) of the playlist when UUID is not available"
     )
 
 async def _ensure_schema(pool: asyncpg.Pool) -> None:
@@ -62,6 +66,15 @@ async def _ensure_schema(pool: asyncpg.Pool) -> None:
 
     create index if not exists playlist_listening_totals_updated_idx
       on playlist_listening_totals (updated_at desc);
+
+    create table if not exists playlist_owner_listening_totals(
+      user_id    bigint primary key references users(telegram_id) on delete cascade,
+      seconds    bigint not null default 0 check (seconds >= 0),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists playlist_owner_listening_totals_updated_idx
+      on playlist_owner_listening_totals (updated_at desc);
     """)
 
 async def _resolve_track_id(pool: asyncpg.Pool, payload: ListenIn) -> Optional[str]:
@@ -75,9 +88,77 @@ async def _resolve_track_id(pool: asyncpg.Pool, payload: ListenIn) -> Optional[s
         return row["id"] if row else None
     return None
 
+
+async def _increment_playlist_totals(
+    con: asyncpg.Connection,
+    playlist_id: uuid.UUID,
+    owner_id: int,
+    delta: int,
+) -> None:
+    await con.execute(
+        """
+        insert into playlist_listening_totals(playlist_id, seconds)
+        values ($1, $2)
+        on conflict (playlist_id)
+        do update set
+          seconds   = playlist_listening_totals.seconds + EXCLUDED.seconds,
+          updated_at = now()
+        """,
+        playlist_id,
+        int(delta),
+    )
+    await con.execute(
+        """
+        insert into playlist_owner_listening_totals(user_id, seconds)
+        values ($1, $2)
+        on conflict (user_id)
+        do update set
+          seconds   = playlist_owner_listening_totals.seconds + EXCLUDED.seconds,
+          updated_at = now()
+        """,
+        int(owner_id),
+        int(delta),
+    )
+
+
+async def _owner_total_seconds(con: asyncpg.Connection, owner_id: int) -> int:
+    cached = await con.fetchval(
+        "select seconds from playlist_owner_listening_totals where user_id=$1",
+        int(owner_id),
+    )
+    if cached is not None:
+        return int(cached)
+
+    agg = await con.fetchval(
+        """
+        select coalesce(sum(lst.seconds), 0)
+          from playlist_listening_totals lst
+          join playlists p on p.id = lst.playlist_id
+         where p.user_id = $1
+        """,
+        int(owner_id),
+    )
+
+    total = int(agg or 0)
+    if total > 0:
+        await con.execute(
+            """
+            insert into playlist_owner_listening_totals(user_id, seconds)
+            values ($1, $2)
+            on conflict (user_id)
+            do update set
+              seconds   = EXCLUDED.seconds,
+              updated_at = now()
+            """,
+            int(owner_id),
+            total,
+        )
+    return total
+
 @router.post("/me/listen")
 async def me_listen(payload: ListenIn, request: Request):
-    uid = _maybe_user_id(request)
+    # Определяем пользователя через общий резолвер (поддержка initData, JWT, debug-заголовков)
+    uid = resolve_user_id(request)
     if not uid:
         raise HTTPException(401, "Unauthorized")
 
@@ -98,28 +179,54 @@ async def me_listen(payload: ListenIn, request: Request):
 
     playlist_uuid: Optional[uuid.UUID] = None
     playlist_owner: Optional[int] = None
+
+    async def _resolve_playlist_by_id(candidate: uuid.UUID) -> tuple[Optional[uuid.UUID], Optional[int]]:
+        if track_uuid is None:
+            return None, None
+        row = await pool.fetchrow(
+            "SELECT id, user_id, is_public FROM playlists WHERE id=$1",
+            candidate,
+        )
+        if not row or not bool(row["is_public"]):
+            return None, None
+        has_track = await pool.fetchval(
+            "SELECT 1 FROM playlist_items WHERE playlist_id=$1 AND track_id=$2",
+            candidate,
+            track_uuid,
+        )
+        if not has_track:
+            return None, None
+        try:
+            owner = int(row["user_id"])
+        except Exception:
+            owner = None
+        return candidate, owner
+
     if payload.playlist_id and track_uuid is not None:
         try:
-            candidate = uuid.UUID(str(payload.playlist_id))
+            candidate_uuid = uuid.UUID(str(payload.playlist_id))
         except Exception:
-            candidate = None
-        if candidate is not None:
+            candidate_uuid = None
+        if candidate_uuid is not None:
+            playlist_uuid, playlist_owner = await _resolve_playlist_by_id(candidate_uuid)
+
+    if (
+        playlist_uuid is None
+        and payload.playlist_handle
+        and track_uuid is not None
+    ):
+        handle = str(payload.playlist_handle or "").strip().lstrip("@").lower()
+        if handle:
             row = await pool.fetchrow(
-                "SELECT id, user_id, is_public FROM playlists WHERE id=$1",
-                candidate,
+                "SELECT id FROM playlists WHERE is_public=true AND lower(handle)=lower($1)",
+                handle,
             )
-            if row and bool(row["is_public"]):
-                has_track = await pool.fetchval(
-                    "SELECT 1 FROM playlist_items WHERE playlist_id=$1 AND track_id=$2",
-                    candidate,
-                    track_uuid,
-                )
-                if has_track:
-                    playlist_uuid = candidate
-                    try:
-                        playlist_owner = int(row["user_id"])
-                    except Exception:
-                        playlist_owner = None
+            if row and row.get("id"):
+                candidate = row["id"]
+                resolved_uuid, resolved_owner = await _resolve_playlist_by_id(candidate)
+                if resolved_uuid is not None:
+                    playlist_uuid = resolved_uuid
+                    playlist_owner = resolved_owner
 
     # безопасно зажмём дельту (на всякий)
     try:
@@ -141,53 +248,62 @@ async def me_listen(payload: ListenIn, request: Request):
             deduped = True
             delta = 0
 
-    # апсерт агрегации по суткам (UTC)
-    if delta > 0:
-        today = datetime.now(timezone.utc).date()
-        await pool.execute("""
-            insert into listening_seconds(user_id, track_id, day, seconds)
-            values ($1, $2::uuid, $3, $4)
-            on conflict (user_id, track_id, day)
-            do update set
-              seconds   = LEAST(86400, listening_seconds.seconds + EXCLUDED.seconds),
-              updated_at = now()
-        """, uid, track_id, today, delta)
-
-        if (
-            playlist_uuid is not None
-            and playlist_owner is not None
-            and int(uid) != int(playlist_owner)
-        ):
-            await pool.execute(
+    async with pool.acquire() as con:
+        if delta > 0:
+            today = datetime.now(timezone.utc).date()
+            await con.execute(
                 """
-                insert into playlist_listening_totals(playlist_id, seconds)
-                values ($1, $2)
-                on conflict (playlist_id)
+                insert into listening_seconds(user_id, track_id, day, seconds)
+                values ($1, $2::uuid, $3, $4)
+                on conflict (user_id, track_id, day)
                 do update set
-                  seconds   = playlist_listening_totals.seconds + EXCLUDED.seconds,
+                  seconds   = LEAST(86400, listening_seconds.seconds + EXCLUDED.seconds),
                   updated_at = now()
                 """,
-                playlist_uuid,
-                int(delta),
+                uid,
+                track_id,
+                today,
+                delta,
             )
 
-    # быстрый ответ с суммами сегодня/за всё время
-    row = await pool.fetchrow("""
-        select
-          coalesce((select seconds
-                    from listening_seconds
-                    where user_id=$1 and track_id=$2::uuid and day=current_date), 0) as today,
-          coalesce((select sum(seconds)
-                    from listening_seconds
-                    where user_id=$1 and track_id=$2::uuid), 0) as all_time
-    """, uid, track_id)
+            if (
+                playlist_uuid is not None
+                and playlist_owner is not None
+                and int(uid) != int(playlist_owner)
+            ):
+                await _increment_playlist_totals(
+                    con,
+                    playlist_uuid,
+                    int(playlist_owner),
+                    delta,
+                )
+
+        # быстрый ответ с суммами сегодня/за всё время
+        row = await con.fetchrow(
+            """
+            select
+              coalesce((select seconds
+                        from listening_seconds
+                        where user_id=$1 and track_id=$2::uuid and day=current_date), 0) as today,
+              coalesce((select sum(seconds)
+                        from listening_seconds
+                        where user_id=$1 and track_id=$2::uuid), 0) as all_time
+            """,
+            uid,
+            track_id,
+        )
 
     return {"ok": True, "deduped": deduped, "delta_applied": delta, "totals": dict(row)}
 
 
 @router.get("/me/listen-seconds")
-async def me_listen_seconds(request: Request, period: str = "all"):
-    uid = _maybe_user_id(request)
+async def me_listen_seconds(
+    request: Request,
+    period: str = "all",
+    scope: str = "playlists",
+):
+    # Повторно используем тот же резолвер, чтобы оба эндпоинта имели идентичную авторизацию
+    uid = resolve_user_id(request)
     if not uid:
         raise HTTPException(401, "Unauthorized")
 
@@ -197,9 +313,16 @@ async def me_listen_seconds(request: Request, period: str = "all"):
 
     await _ensure_schema(pool)
 
+    scope_norm = (scope or "playlists").strip().lower()
+    if scope_norm in {"playlists", "playlist", "received"}:
+        if period and (period or "").strip().lower() not in {"", "all", "*", "total"}:
+            raise HTTPException(400, "Period is not supported for playlist totals")
+        async with pool.acquire() as con:
+            total = await _owner_total_seconds(con, int(uid))
+        return {"seconds": int(total)}
+
     period_norm = (period or "all").strip().lower()
     today = datetime.now(timezone.utc).date()
-    date_from = None
 
     if period_norm in {"all", "*", "total"}:
         date_from = None

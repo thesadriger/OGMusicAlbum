@@ -3,7 +3,7 @@ import os, time
 from typing import Any, Dict, Optional, Tuple
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from app.api.users import _get_pool
 
 # Meili — опционально: если нет ключа/хоста, автоматически уйдём в fallback (БД)
@@ -53,6 +53,7 @@ def _get_meili_index():
 # -------------------- основной эндпоинт --------------------
 @router.get("/search")
 async def search_tracks(
+    response: Response,
     q: str = Query(..., min_length=1, max_length=200),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),

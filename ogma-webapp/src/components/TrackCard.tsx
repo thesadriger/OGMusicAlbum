@@ -7,7 +7,6 @@ import { emitPlayTrack } from "@/hooks/usePlayerBus";
 import GradientRing from "@/components/GradientRing";
 import { addToPlaylist, inPlaylist, removeFromPlaylist, addItemToPlaylist, listMyPlaylists } from "@/lib/playlists";
 import AddToPlaylistPopover from "@/components/AddToPlaylistPopover";
-import { useSwipeable } from 'react-swipeable';
 
 // Новые импорты фоновых компонентов React Bits
 import LiquidChrome from "@/components/backgrounds/LiquidChrome";
@@ -174,11 +173,6 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     document.querySelector(`audio[data-track-id="${t.id}"]`) as HTMLAudioElement | null,
   [t.id]);
   const already = inPlaylist(t.id);
-
-  // --- Таймер трека (мм:сс) ---
-
-
-
   // --- выбор фоновой анимации React Bits (стабильно "случайно" по id трека) ---
   const BackgroundComp = useMemo<ComponentType<any>>(() => {
     // список без затенения верхнего объекта
@@ -198,18 +192,29 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     const pickRandomById = () => {
       const idStr = String(t.id);
       let hash = 0;
-      for (let i = 0; i < idStr.length; i++) hash = ((hash * 31) + idStr.charCodeAt(i)) >>> 0;
+      for (let i = 0; i < idStr.length; i++) {
+        hash = (hash * 31 + idStr.charCodeAt(i)) >>> 0;
+      }
       return (BG_LIST[hash % BG_LIST.length] || Waves) as ComponentType<any>;
+    };
+
+    // 👇 helper с guard против SSR
+    const lsGet = (key: string): string | null => {
+      if (typeof window === "undefined") return null;
+      try {
+        return window.localStorage.getItem(key);
+      } catch {
+        return null;
+      }
     };
 
     // 1) источник правды: принудительные пропсы из предпросмотра, иначе — localStorage
     const mode = (forceBgMode ??
-      ((localStorage.getItem("ogma_track_bg_mode") as "random" | "fixed" | null) ?? "random")
-    ) as "random" | "fixed";
+      (lsGet("ogma_track_bg_mode") as "random" | "fixed" | null) ??
+      "random") as "random" | "fixed";
 
     if (mode === "fixed") {
-      const k = (forceBgKey ?? localStorage.getItem("ogma_track_bg_key") ?? "");
-      // 2) безопасный откат: если ключ пуст/неизвестный — рендерим «рандом», а не undefined
+      const k = forceBgKey ?? lsGet("ogma_track_bg_key") ?? "";
       if (k && byKey[k]) return byKey[k];
       return pickRandomById();
     }
@@ -235,9 +240,13 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
 
   // 2) глобально блокируем touchmove только во время скраба (iOS/TG overscroll)
   useEffect(() => {
-    const onTouchMove = (ev: TouchEvent) => { if (scrubbing) ev.preventDefault(); };
-    if (scrubbing) document.addEventListener("touchmove", onTouchMove, { passive: false });
-    return () => document.removeEventListener("touchmove", onTouchMove as any);
+    const onTouchMove = (ev: TouchEvent) => {
+      if (scrubbing) ev.preventDefault();
+    };
+    if (scrubbing)
+      document.addEventListener("touchmove", onTouchMove, { passive: false });
+    return () =>
+      document.removeEventListener("touchmove", onTouchMove as any);
   }, [scrubbing]);
 
   // 3) чистим таймер long-press при размонтировании
@@ -270,23 +279,56 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     transformOrigin: `50% ${pivotYRef.current}%`,
   };
 
-  const tg = (window as any)?.Telegram?.WebApp;
+  const tg = (typeof window !== "undefined"
+    ? (window as any)?.Telegram?.WebApp
+    : undefined) as any;
+
   const HAPTIC_OK =
     !!tg?.HapticFeedback &&
-    (typeof tg?.isVersionAtLeast === 'function' ? tg.isVersionAtLeast('6.1') : parseFloat(tg?.version || '0') >= 6.1);
+    (typeof tg?.isVersionAtLeast === "function"
+      ? tg.isVersionAtLeast("6.1")
+      : parseFloat(tg?.version || "0") >= 6.1);
 
   const canHaptic = () => HAPTIC_OK;
 
-  // iOS/Telegram first, fallback to Vibrate API
-  const hapticImpact = (kind: "light" | "medium" | "heavy" | "soft" | "rigid" = "light") => {
-    const wa = (window as any)?.Telegram?.WebApp;
-    if (canHaptic()) { try { wa.HapticFeedback.impactOccurred(kind); return; } catch { } }
-    try { navigator.vibrate?.(20); } catch { }
+  const hapticImpact = (
+    kind: "light" | "medium" | "heavy" | "soft" | "rigid" = "light"
+  ) => {
+    const wa = (typeof window !== "undefined"
+      ? (window as any)?.Telegram?.WebApp
+      : undefined) as any;
+    if (canHaptic()) {
+      try {
+        wa.HapticFeedback.impactOccurred(kind);
+        return;
+      } catch {
+        /* noop */
+      }
+    }
+    try {
+      navigator.vibrate?.(20);
+    } catch {
+      /* noop */
+    }
   };
+
   const hapticTick = () => {
-    const wa = (window as any)?.Telegram?.WebApp;
-    if (canHaptic()) { try { wa.HapticFeedback.selectionChanged(); return; } catch { } }
-    try { navigator.vibrate?.(6); } catch { }
+    const wa = (typeof window !== "undefined"
+      ? (window as any)?.Telegram?.WebApp
+      : undefined) as any;
+    if (canHaptic()) {
+      try {
+        wa.HapticFeedback.selectionChanged();
+        return;
+      } catch {
+        /* noop */
+      }
+    }
+    try {
+      navigator.vibrate?.(6);
+    } catch {
+      /* noop */
+    }
   };
 
   // --- add flow: локально или показать выбор публичных ---
@@ -412,7 +454,9 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
 
   // ВАЖНО: хук очистки — НА УРОВНЕ КОМПОНЕНТА, а не внутри onPointerMove
   useEffect(() => {
-    return () => { if (moveRaf.current) cancelAnimationFrame(moveRaf.current); };
+    return () => {
+      if (moveRaf.current) cancelAnimationFrame(moveRaf.current);
+    };
   }, []);
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -544,18 +588,23 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
           {(dx < 0 || leftOpen) && (
             <div
               className="absolute inset-0 rounded-2xl overflow-hidden select-none flex items-center justify-end pr-4"
-              style={{ background: leftBgColor, transition: "background 120ms linear" }}>
+              style={{ background: leftBgColor, transition: "background 120ms linear" }}
+            >
               <span className="text-white text-sm opacity-90">
                 {mode === "playlist" ? "Удалить" : "Скачать"}
               </span>
             </div>
           )}
+
           {dx > 0 && (
             <div
               className="absolute inset-0 rounded-2xl overflow-hidden select-none flex items-center justify-start pl-4"
-              style={{ background: rightBgColor, transition: "background 120ms linear" }}>
+              style={{ background: rightBgColor, transition: "background 120ms linear" }}
+            >
               <span className="text-white text-sm font-medium">
-                {mode === "default" ? (already ? "В плейлисте" : "В плейлист") : "Скачать"}
+                {mode === "default"
+                  ? (already ? "В плейлисте" : "В плейлист")
+                  : "Скачать"}
               </span>
             </div>
           )}
@@ -571,11 +620,20 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
-        onTouchMoveCapture={(e) => { if (scrubbing) e.preventDefault(); }}
+        onTouchMoveCapture={(e) => {
+          if (scrubbing) e.preventDefault();
+        }}
         onContextMenu={(e) => e.preventDefault()}
         onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
-          if (e.key === "Escape" && leftOpen) { setAnim("snap"); setDx(0); setLeftOpen(false); }
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+          if (e.key === "Escape" && leftOpen) {
+            setAnim("snap");
+            setDx(0);
+            setLeftOpen(false);
+          }
         }}
         style={{
           ...style,
@@ -586,13 +644,16 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
         className={
           "relative z-10 cursor-pointer rounded-2xl p-4 shadow bg-white dark:bg-zinc-900 " +
           "border border-zinc-200 dark:border-zinc-800 overflow-hidden select-none " +
-          (isActive ? (isPaused ? "opacity-95" : "") : "hover:bg-white/95 dark:hover:bg-zinc-900/95")
+          (isActive
+            ? isPaused
+              ? "opacity-95"
+              : ""
+            : "hover:bg-white/95 dark:hover:bg-zinc-900/95")
         }
       >
-        {/* Фоновая анимация из React Bits + серый полупрозрачный прогресс */}
+        {/* Фоновая анимация + прогресс-плёнка */}
         {isActive && (
           <div className="absolute inset-0 z-0 pointer-events-none">
-            {/* фон-анимация */}
             <div className="absolute inset-0 pointer-events-none opacity-70">
               <BackgroundComp
                 key={`${bgVersion}:${forceBgMode ?? ""}:${forceBgKey ?? ""}`}
@@ -623,7 +684,8 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
           />
         )}
 
-        <div className="flex items-center gap-3">
+        {/* Контент трека */}
+        <div className="flex items-center gap-3 relative">
           <div className="flex-1 min-w-0 pr-20 md:pr-24 text-left">
             <div className="text-base font-semibold truncate text-white drop-shadow-[0_1px_2px_rgba(0,0,0,.35)]">
               {t.title}
@@ -646,60 +708,429 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
           />
         </div>
 
+        {/* Toast (поверх карточки) */}
         {toast && (
-          <div className={`absolute top-2 right-2 z-20 text-xs rounded-md px-2 py-1 ${toastBgClass} text-white shadow-sm pointer-events-none`}>
-            {toast === "added" ? (addedWhere ? `Добавлено в ${addedWhere}` : "Добавлено")
-              : toast === "exists" ? "Уже в плейлисте"
-                : toast === "removed" ? "Удалено"
-                  : toast === "sending" ? "Отправляю…"
-                    : toast === "sent" ? "Отправлено"
-                      : toast === "error" ? "Ошибка отправки"
+          <div
+            className={`absolute top-2 right-2 z-20 text-xs rounded-md px-2 py-1 ${toastBgClass} text-white shadow-sm pointer-events-none`}
+          >
+            {toast === "added"
+              ? addedWhere
+                ? `Добавлено в ${addedWhere}`
+                : "Добавлено"
+              : toast === "exists"
+                ? "Уже в плейлисте"
+                : toast === "removed"
+                  ? "Удалено"
+                  : toast === "sending"
+                    ? "Отправляю…"
+                    : toast === "sent"
+                      ? "Отправлено"
+                      : toast === "error"
+                        ? "Ошибка отправки"
                         : ""}
           </div>
         )}
-      </div>
 
-      <AddToPlaylistPopover
-        open={chooseOpen}
-        anchorRef={cardRef}
-        onClose={() => {
-          setChooseOpen(false);
-          setFrozen(false);
-          setAnim("snap");
-          setDx(0);
-        }}
-        trackTitle={t.title}
-        trackArtists={t.artists}
-        playlists={publicPls}
-        disabled={addingRemote}
-        containsServer={serverContains}
-        onPickLocal={() => {
-          setChooseOpen(false);
-          commitAddLocal();
-        }}
-        onPickServer={async (p) => {
-          setAddingRemote(true);
-          try {
-            await addItemToPlaylist(p.id, t.id);
-            const clean = (p.handle || "").toString().replace(/^@/, "");
-            setAddedWhere(clean ? `@${clean}` : null);
-            setServerContains((m) => ({ ...m, [p.id]: true }));
-            setToast("added");
-            hapticImpact("medium");
-
-            // уведомим страницу публичного плейлиста (если она открыта)
-            if (clean) {
-              window.dispatchEvent(new CustomEvent("ogma:public-playlist-item-added", {
-                detail: { handle: clean.toLowerCase(), track: t }
-              }));
-            }
-          } catch {
-            setToast("error");
-          } finally {
-            setAddingRemote(false);
+        {/* Поповер выбора плейлиста */}
+        <AddToPlaylistPopover
+          open={chooseOpen}
+          anchorRef={cardRef}
+          onClose={() => {
             setChooseOpen(false);
-          }
-        }}
+            setFrozen(false);
+            setAnim("snap");
+            setDx(0);
+          }}
+          trackTitle={t.title}
+          trackArtists={t.artists}
+          playlists={publicPls}
+          disabled={addingRemote}
+          containsServer={serverContains}
+          onPickLocal={() => {
+            setChooseOpen(false);
+            commitAddLocal();
+          }}
+          onPickServer={async (p) => {
+            setAddingRemote(true);
+            try {
+              await addItemToPlaylist(p.id, t.id);
+              const clean = (p.handle || "").toString().replace(/^@/, "");
+              setAddedWhere(clean ? `@${clean}` : null);
+              setServerContains((m) => ({ ...m, [p.id]: true }));
+              setToast("added");
+              hapticImpact("medium");
+
+              if (clean && typeof window !== "undefined") {
+                window.dispatchEvent(
+                  new CustomEvent("ogma:public-playlist-item-added", {
+                    detail: { handle: clean.toLowerCase(), track: t },
+                  })
+                );
+              }
+            } catch {
+              setToast("error");
+            } finally {
+              setAddingRemote(false);
+              setChooseOpen(false);
+            }
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+type TrackProgressOverlayProps = {
+  trackId: string | number;
+  isActive: boolean;
+  getAudio: () => HTMLAudioElement | null;
+  scrubbing: boolean;
+  scrubPct: number;
+  lastProgressRef: MutableRefObject<number>;
+};
+
+function TrackProgressOverlay({ trackId, isActive, getAudio, scrubbing, scrubPct, lastProgressRef }: TrackProgressOverlayProps) {
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const scrubbingRef = useRef(scrubbing);
+
+  const setWidth = useCallback((pct: number) => {
+    const node = barRef.current;
+    if (!node) return;
+    const clamped = clamp(pct, 0, 1);
+    node.style.width = `${clamped * 100}%`;
+  }, []);
+
+  useEffect(() => {
+    scrubbingRef.current = scrubbing;
+  }, [scrubbing]);
+
+  useEffect(() => {
+    if (scrubbing) {
+      setWidth(scrubPct);
+      return;
+    }
+    setWidth(lastProgressRef.current);
+  }, [scrubbing, scrubPct, lastProgressRef, setWidth]);
+
+  useEffect(() => {
+    let running = false;
+
+    const stop = () => {
+      running = false;
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+
+    if (!isActive) {
+      stop();
+      lastProgressRef.current = 0;
+      if (!scrubbingRef.current) setWidth(0);
+      return () => { stop(); };
+    }
+
+    const audio = getAudio();
+    if (!audio) {
+      lastProgressRef.current = 0;
+      setWidth(0);
+      return () => { stop(); };
+    }
+
+    const updateFromAudio = () => {
+      const dur = audio.duration;
+      if (Number.isFinite(dur) && dur > 0) {
+        const pct = clamp(audio.currentTime / dur, 0, 1);
+        lastProgressRef.current = pct;
+        if (!scrubbingRef.current) setWidth(pct);
+      }
+    };
+
+    const loop = () => {
+      updateFromAudio();
+      if (running) rafRef.current = requestAnimationFrame(loop);
+    };
+
+    const start = () => {
+      if (running) return;
+      running = true;
+      rafRef.current = requestAnimationFrame(loop);
+    };
+
+    const handlePause = () => {
+      updateFromAudio();
+      stop();
+    };
+
+    const handleEnded = () => {
+      stop();
+      lastProgressRef.current = 0;
+      setWidth(0);
+    };
+
+    audio.addEventListener("timeupdate", updateFromAudio);
+    audio.addEventListener("durationchange", updateFromAudio);
+    audio.addEventListener("play", start);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
+
+    updateFromAudio();
+    if (!audio.paused) start();
+
+    return () => {
+      stop();
+      audio.removeEventListener("timeupdate", updateFromAudio);
+      audio.removeEventListener("durationchange", updateFromAudio);
+      audio.removeEventListener("play", start);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [trackId, isActive, getAudio, lastProgressRef, setWidth]);
+
+  return (
+    <div
+      ref={barRef}
+      className="absolute inset-y-0 left-0 pointer-events-none z-[1]"
+      style={{ width: `${lastProgressRef.current * 100}%` }}
+    >
+      <GlassSurface
+        borderRadius={16}
+        backgroundOpacity={0.05}
+        saturation={1}
+        blur={25}
+        noBorder
+        noShadow
+        tone="light"
+        className="w-full h-full"
+      />
+    </div>
+  );
+}
+
+type TrackTimerProps = {
+  trackId: string | number;
+  isActive: boolean;
+  getAudio: () => HTMLAudioElement | null;
+  scrubbing: boolean;
+  scrubPct: number;
+  lastProgressRef: MutableRefObject<number>;
+};
+
+function TrackTimer({ trackId, isActive, getAudio, scrubbing, scrubPct, lastProgressRef }: TrackTimerProps) {
+  const [mm, setMm] = useState(0);
+  const [ss, setSs] = useState(0);
+  const rafRef = useRef<number | null>(null);
+  const durationRef = useRef(0);
+  const lastSecRef = useRef(-1);
+  const scrubbingRef = useRef(scrubbing);
+  const [visible, setVisible] = useState(false);
+
+  const evaluateVisibility = useCallback((audio?: HTMLAudioElement | null) => {
+    if (!isActive) {
+      setVisible(false);
+      return false;
+    }
+
+    const element = audio ?? getAudio();
+    const hasDur = !!element && Number.isFinite(element.duration) && element.duration > 0;
+    const hasProgress = !!element && element.currentTime > 0;
+    const shouldShow = isActive && (hasDur || hasProgress || lastProgressRef.current > 0 || scrubbingRef.current);
+
+    setVisible((prev) => (prev === shouldShow ? prev : shouldShow));
+    return shouldShow;
+  }, [getAudio, isActive, lastProgressRef]);
+
+  useEffect(() => {
+    scrubbingRef.current = scrubbing;
+    evaluateVisibility();
+  }, [scrubbing, evaluateVisibility]);
+
+  useEffect(() => {
+    evaluateVisibility();
+  }, [evaluateVisibility, trackId, isActive]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    let raf: number | null = null;
+    let cleanupAudio: (() => void) | null = null;
+    let cancelled = false;
+
+    const attach = (audio: HTMLAudioElement) => {
+      const handle = () => evaluateVisibility(audio);
+      const events: (keyof HTMLMediaElementEventMap)[] = [
+        "loadedmetadata",
+        "durationchange",
+        "timeupdate",
+        "play",
+        "progress",
+        "ended",
+      ];
+      events.forEach((evt) => audio.addEventListener(evt, handle));
+      handle();
+
+      cleanupAudio = () => {
+        events.forEach((evt) => audio.removeEventListener(evt, handle));
+      };
+    };
+
+    const lookup = () => {
+      if (cancelled) return;
+      const audio = getAudio();
+      if (audio) {
+        attach(audio);
+      } else {
+        raf = requestAnimationFrame(lookup);
+      }
+    };
+
+    lookup();
+
+    return () => {
+      cancelled = true;
+      if (raf != null) cancelAnimationFrame(raf);
+      cleanupAudio?.();
+    };
+  }, [getAudio, isActive, trackId, evaluateVisibility]);
+
+  const applySeconds = useCallback((seconds: number, force = false) => {
+    const clamped = Math.max(0, Math.floor(seconds));
+    if (!force && clamped === lastSecRef.current) return;
+    lastSecRef.current = clamped;
+    const minutes = Math.floor(clamped / 60);
+    const secs = clamped % 60;
+    setMm((prev) => (prev === minutes ? prev : minutes));
+    setSs((prev) => (prev === secs ? prev : secs));
+  }, []);
+
+  useEffect(() => {
+    let running = false;
+
+    const stop = () => {
+      running = false;
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+
+    if (!visible) {
+      stop();
+      return () => { stop(); };
+    }
+
+    const audio = getAudio();
+
+    if (!audio || !isActive) {
+      stop();
+      if (!scrubbingRef.current) {
+        lastSecRef.current = -1;
+        applySeconds(lastProgressRef.current * (durationRef.current || 0), true);
+      }
+      return () => { stop(); };
+    }
+
+    const update = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        durationRef.current = audio.duration;
+      }
+      applySeconds(audio.currentTime);
+      if (running) rafRef.current = requestAnimationFrame(update);
+    };
+
+    const start = () => {
+      if (running) return;
+      running = true;
+      rafRef.current = requestAnimationFrame(update);
+    };
+
+    const handlePause = () => {
+      update();
+      stop();
+    };
+
+    const handleEnded = () => {
+      stop();
+      durationRef.current = Number.isFinite(audio.duration) ? audio.duration : durationRef.current;
+      lastSecRef.current = -1;
+      applySeconds(0, true);
+    };
+
+    const handleDuration = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        durationRef.current = audio.duration;
+      }
+    };
+
+    audio.addEventListener("timeupdate", update);
+    audio.addEventListener("durationchange", handleDuration);
+    audio.addEventListener("play", start);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
+
+    handleDuration();
+    update();
+    if (!audio.paused) start();
+
+    return () => {
+      stop();
+      audio.removeEventListener("timeupdate", update);
+      audio.removeEventListener("durationchange", handleDuration);
+      audio.removeEventListener("play", start);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [trackId, visible, isActive, getAudio, applySeconds, lastProgressRef]);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (scrubbing) {
+      const audio = getAudio();
+      const duration = durationRef.current || audio?.duration || 0;
+      if (duration > 0) {
+        applySeconds(scrubPct * duration, true);
+      } else if (audio) {
+        applySeconds(audio.currentTime, true);
+      } else {
+        applySeconds(lastProgressRef.current * durationRef.current, true);
+      }
+    } else if (!isActive) {
+      lastSecRef.current = -1;
+      applySeconds(0, true);
+    }
+  }, [visible, scrubbing, scrubPct, isActive, getAudio, applySeconds, lastProgressRef]);
+
+  if (!visible) return null;
+
+  return (
+    <div
+      className="absolute top-1.5 bottom-1.5 right-1.5 flex items-center rounded-md px-2 opacity-40"
+    >
+      <Counter
+        value={mm}
+        places={[10, 1]}
+        fontSize={50}
+        padding={0}
+        gap={0}
+        textColor="white"
+        fontWeight={900}
+        gradientHeight={0}
+        digitStyle={{ width: "1ch" }}
+        counterStyle={{ lineHeight: 1 }}
+      />
+      <span className="mx-0.5 tabular-nums">:</span>
+      <Counter
+        value={ss}
+        places={[10, 1]}
+        fontSize={50}
+        padding={0}
+        gap={0}
+        textColor="white"
+        fontWeight={900}
+        gradientHeight={0}
+        digitStyle={{ width: "1ch" }}
+        counterStyle={{ lineHeight: 1 }}
       />
     </div>
   );

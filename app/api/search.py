@@ -21,9 +21,11 @@ CACHE_MAX  = int(os.environ.get("TRACKS_CACHE_MAX", "1000"))
 _MEILI_HOST = os.environ.get("MEILI_HOST") or os.environ.get("MEILI_URL")
 _MEILI_KEY  = os.environ.get("MEILI_KEY") or os.environ.get("MEILI_MASTER_KEY")
 
-_cache: Dict[Tuple[str, int, int], Tuple[float, Dict[str, Any]]] = {}
+CacheKey = Tuple[str, int, int, int, int]
 
-def _cache_get(key: Tuple[str, int, int]) -> Optional[Dict[str, Any]]:
+_cache: Dict[CacheKey, Tuple[float, Dict[str, Any]]] = {}
+
+def _cache_get(key: CacheKey) -> Optional[Dict[str, Any]]:
     hit = _cache.get(key)
     if not hit:
         return None
@@ -33,13 +35,18 @@ def _cache_get(key: Tuple[str, int, int]) -> Optional[Dict[str, Any]]:
         return None
     return val
 
-def _cache_put(key: Tuple[str, int, int], val: Dict[str, Any]) -> None:
+def _cache_put(key: CacheKey, val: Dict[str, Any]) -> None:
     if len(_cache) >= CACHE_MAX:
         try:
             _cache.pop(next(iter(_cache)))  # самый старый
         except Exception:
             _cache.clear()
     _cache[key] = (time.time(), val)
+
+
+def _set_cache_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = f"public, max-age={SEARCH_TTL}"
+    response.headers["Vary"] = "Accept-Encoding"
 
 def _get_meili_index():
     if not (meilisearch and _MEILI_HOST and _MEILI_KEY):
@@ -57,25 +64,32 @@ async def search_tracks(
     q: str = Query(..., min_length=1, max_length=200),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    *,
+    playlist_limit: int = Query(10, ge=1, le=100, alias="playlist_limit"),
+    playlist_offset: int = Query(0, ge=0, alias="playlist_offset"),
+    response: Response,
     pool: asyncpg.Pool = Depends(_get_pool),
 ):
     term = q.strip()
     if not term:
         raise HTTPException(400, "Empty query")
 
-    # ключ кэша (в кэше держим только неперсонализированный ответ)
-    ckey = (term.lower(), int(limit), int(offset))
+    ckey: CacheKey = (
+        term.lower(),
+        int(limit),
+        int(offset),
+        int(playlist_limit),
+        int(playlist_offset),
+    )
     cached = _cache_get(ckey)
     if cached is not None:
-        # соблюдаем форму ответа под фронт (hits/limit/offset/estimatedTotalHits)
-        return {"hits": cached["hits"], "limit": limit, "offset": offset,
-                "estimatedTotalHits": cached.get("estimatedTotalHits")}
+        _set_cache_headers(response)
+        return cached
 
-    # 1) попробуем Meili
     idx = _get_meili_index()
+    tracks_section: Optional[Dict[str, Any]] = None
     if idx is not None:
         try:
-            # отдаём минимально необходимое; можно добавить attributesToRetrieve при желании
             r = idx.search(
                 term,
                 {
@@ -83,39 +97,92 @@ async def search_tracks(
                     "offset": offset,
                 },
             )
-            out = {
+            tracks_section = {
                 "hits": r.get("hits", []),
                 "limit": limit,
                 "offset": offset,
                 "estimatedTotalHits": r.get("estimatedTotalHits"),
             }
-            _cache_put(ckey, out)
-            return out
         except Exception:
-            # если Meili недоступен/ошибка — падаем в fallback
             pass
 
-    # 2) fallback: Postgres (быстрое условие по нормализованному полю и индексу)
+    handle_term = term[1:] if term.startswith("@") else term
+    playlist_rows = []
+    playlist_total = 0
+
     async with pool.acquire() as con:
         async with con.transaction():
-            # на всякий — ограничим запрос по времени
             await con.execute("SET LOCAL statement_timeout = '2000ms'")
-            # Используем нормализованное поле + индекс GIN/TRGM (ты уже создал)
-            rows = await con.fetch(
+
+            if tracks_section is None:
+                rows = await con.fetch(
+                    """
+                    select id::text, tg_msg_id as "msgId", chat_username as chat,
+                           title, artists, hashtags, duration_s as duration, mime, created_at
+                    from tracks
+                    where search_blob_norm like '%' || lower(unaccent($1)) || '%'
+                    order by tg_msg_id desc
+                    limit $2 offset $3
+                    """,
+                    term,
+                    limit,
+                    offset,
+                )
+                tracks_section = {
+                    "hits": [dict(r) for r in rows],
+                    "limit": limit,
+                    "offset": offset,
+                    "estimatedTotalHits": None,
+                }
+
+            playlist_rows = await con.fetch(
                 """
-                select id::text, tg_msg_id as "msgId", chat_username as chat,
-                       title, artists, hashtags, duration_s as duration, mime, created_at
-                from tracks
-                where search_blob_norm like '%' || lower(unaccent($1)) || '%'
-                order by tg_msg_id desc
-                limit $2 offset $3
+                select
+                    id::text                 as id,
+                    user_id                  as "userId",
+                    title,
+                    kind,
+                    is_public               as "isPublic",
+                    handle,
+                    created_at,
+                    updated_at,
+                    count(*) over()         as total
+                from playlists
+                where is_public = true
+                  and (
+                        (handle is not null and $1 <> '' and lower(handle) like '%' || lower($1) || '%')
+                        or lower(unaccent(title)) like '%' || lower(unaccent($2)) || '%'
+                      )
+                order by updated_at desc nulls last, created_at desc
+                limit $3 offset $4
                 """,
-                term, limit, offset
+                handle_term,
+                term,
+                playlist_limit,
+                playlist_offset,
             )
-            # приводим к той же форме, что и Meili
-            hits = [dict(r) for r in rows]
-            out = {"hits": hits, "limit": limit, "offset": offset, "estimatedTotalHits": None}
-            _cache_put(ckey, out)
-            response.headers["Cache-Control"] = f"public, max-age={SEARCH_TTL}"
-            response.headers["Vary"] = "Accept-Encoding"
-            return out
+
+    playlist_hits = []
+    for row in playlist_rows:
+        payload = dict(row)
+        playlist_total = payload.pop("total", playlist_total)
+        playlist_hits.append(payload)
+
+    playlist_section = {
+        "hits": playlist_hits,
+        "limit": playlist_limit,
+        "offset": playlist_offset,
+        "estimatedTotalHits": playlist_total if playlist_hits else 0,
+    }
+
+    result = {
+        "hits": tracks_section["hits"] if tracks_section else [],
+        "limit": tracks_section["limit"] if tracks_section else limit,
+        "offset": tracks_section["offset"] if tracks_section else offset,
+        "estimatedTotalHits": tracks_section.get("estimatedTotalHits") if tracks_section else None,
+        "playlists": playlist_section,
+    }
+
+    _cache_put(ckey, result)
+    _set_cache_headers(response)
+    return result

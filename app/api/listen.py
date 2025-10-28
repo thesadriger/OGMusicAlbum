@@ -32,6 +32,10 @@ class ListenIn(BaseModel):
         None,
         description="UUID of the playlist the track is played from"
     )
+    playlist_handle: Optional[str] = Field(
+        None,
+        description="Handle (@name) of the playlist when UUID is not available"
+    )
 
 async def _ensure_schema(pool: asyncpg.Pool) -> None:
     # создаём таблицы, если их ещё нет (idempotent)
@@ -174,28 +178,54 @@ async def me_listen(payload: ListenIn, request: Request):
 
     playlist_uuid: Optional[uuid.UUID] = None
     playlist_owner: Optional[int] = None
+
+    async def _resolve_playlist_by_id(candidate: uuid.UUID) -> tuple[Optional[uuid.UUID], Optional[int]]:
+        if track_uuid is None:
+            return None, None
+        row = await pool.fetchrow(
+            "SELECT id, user_id, is_public FROM playlists WHERE id=$1",
+            candidate,
+        )
+        if not row or not bool(row["is_public"]):
+            return None, None
+        has_track = await pool.fetchval(
+            "SELECT 1 FROM playlist_items WHERE playlist_id=$1 AND track_id=$2",
+            candidate,
+            track_uuid,
+        )
+        if not has_track:
+            return None, None
+        try:
+            owner = int(row["user_id"])
+        except Exception:
+            owner = None
+        return candidate, owner
+
     if payload.playlist_id and track_uuid is not None:
         try:
-            candidate = uuid.UUID(str(payload.playlist_id))
+            candidate_uuid = uuid.UUID(str(payload.playlist_id))
         except Exception:
-            candidate = None
-        if candidate is not None:
+            candidate_uuid = None
+        if candidate_uuid is not None:
+            playlist_uuid, playlist_owner = await _resolve_playlist_by_id(candidate_uuid)
+
+    if (
+        playlist_uuid is None
+        and payload.playlist_handle
+        and track_uuid is not None
+    ):
+        handle = str(payload.playlist_handle or "").strip().lstrip("@").lower()
+        if handle:
             row = await pool.fetchrow(
-                "SELECT id, user_id, is_public FROM playlists WHERE id=$1",
-                candidate,
+                "SELECT id FROM playlists WHERE is_public=true AND lower(handle)=lower($1)",
+                handle,
             )
-            if row and bool(row["is_public"]):
-                has_track = await pool.fetchval(
-                    "SELECT 1 FROM playlist_items WHERE playlist_id=$1 AND track_id=$2",
-                    candidate,
-                    track_uuid,
-                )
-                if has_track:
-                    playlist_uuid = candidate
-                    try:
-                        playlist_owner = int(row["user_id"])
-                    except Exception:
-                        playlist_owner = None
+            if row and row.get("id"):
+                candidate = row["id"]
+                resolved_uuid, resolved_owner = await _resolve_playlist_by_id(candidate)
+                if resolved_uuid is not None:
+                    playlist_uuid = resolved_uuid
+                    playlist_owner = resolved_owner
 
     # безопасно зажмём дельту (на всякий)
     try:

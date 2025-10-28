@@ -92,6 +92,42 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   const [publicPls, setPublicPls] = useState<MyPlaylist[]>([]);
   const [addingRemote, setAddingRemote] = useState(false);
   const [serverContains, setServerContains] = useState<Record<string, boolean>>({});
+  const lastServerEventToken = useRef<string | null>(null);
+  const trackMsgId = (t as any)?.msgId ?? (t as any)?.msgID ?? null;
+  const trackChatRaw =
+    (t as any)?.chat ?? (t as any)?.chat_username ?? (t as any)?.chatUsername ?? null;
+  const normalizedTrackChat = trackChatRaw
+    ? String(trackChatRaw).replace(/^@/, "").toLowerCase()
+    : null;
+
+  const matchesTrack = useCallback(
+    (candidate: any) => {
+      if (!candidate) return false;
+      const candId = candidate.id ?? candidate.trackId ?? candidate.track_id ?? null;
+      if (candId && String(candId) === String(t.id)) return true;
+
+      const candMsg = candidate.msgId ?? candidate.msg_id ?? null;
+      const candChatRaw =
+        candidate.chat ?? candidate.chat_username ?? candidate.chatUsername ?? null;
+      const candChat = candChatRaw
+        ? String(candChatRaw).replace(/^@/, "").toLowerCase()
+        : null;
+
+      if (candMsg != null && trackMsgId != null) {
+        const candMsgNum = Number(candMsg);
+        const trackMsgNum = Number(trackMsgId);
+        if (Number.isFinite(candMsgNum) && Number.isFinite(trackMsgNum)) {
+          if (candMsgNum === trackMsgNum) {
+            if (!normalizedTrackChat || !candChat) return true;
+            return candChat === normalizedTrackChat;
+          }
+        }
+      }
+
+      return false;
+    },
+    [t.id, trackMsgId, normalizedTrackChat]
+  );
 
   // «заморозка» свайпа пока открыт поповер
   const [frozen, setFrozen] = useState(false);
@@ -172,7 +208,12 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   const getAudio = useCallback(() =>
     document.querySelector(`audio[data-track-id="${t.id}"]`) as HTMLAudioElement | null,
   [t.id]);
-  const already = inPlaylist(t.id);
+  const remoteContains = useMemo(
+    () => Object.values(serverContains).some(Boolean),
+    [serverContains]
+  );
+  const alreadyLocal = inPlaylist(t.id);
+  const already = alreadyLocal || remoteContains;
   // --- выбор фоновой анимации React Bits (стабильно "случайно" по id трека) ---
   const BackgroundComp = useMemo<ComponentType<any>>(() => {
     // список без затенения верхнего объекта
@@ -354,7 +395,9 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
             })
           );
           const map: Record<string, boolean> = {};
-          for (const [id, ok] of checks) if (ok) map[id] = true;
+          for (const [id, ok] of checks) {
+            if (ok) map[String(id)] = true;
+          }
           setServerContains(map);
         } catch { }
         setFrozen(true);
@@ -377,6 +420,68 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
       setFrozen(false);
     }
   }, [chooseOpen, frozen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const onAdded = (event: Event) => {
+      const detail = (event as CustomEvent<any>)?.detail ?? {};
+      const candidate = detail.track ?? detail;
+      if (!matchesTrack(candidate)) return;
+
+      const pidRaw = detail.playlistId ?? detail.playlist_id ?? null;
+      if (pidRaw != null) {
+        const pid = String(pidRaw);
+        setServerContains((prev) => {
+          if (prev[pid]) return prev;
+          return { ...prev, [pid]: true };
+        });
+      }
+
+      if (detail?.token === lastServerEventToken.current) return;
+
+      if (!chooseOpen) {
+        const badge = detail.handle
+          ? `@${String(detail.handle).replace(/^@/, "")}`
+          : null;
+        setAddedWhere(badge);
+        setToast("added");
+      }
+    };
+
+    const onRemoved = (event: Event) => {
+      const detail = (event as CustomEvent<any>)?.detail ?? {};
+      const candidate = detail.track ?? detail;
+      if (!matchesTrack(candidate)) return;
+
+      const pidRaw = detail.playlistId ?? detail.playlist_id ?? null;
+      if (pidRaw != null) {
+        const pid = String(pidRaw);
+        setServerContains((prev) => {
+          if (!(pid in prev)) return prev;
+          const next = { ...prev };
+          delete next[pid];
+          return next;
+        });
+      } else {
+        setServerContains((prev) => (Object.keys(prev).length ? {} : prev));
+      }
+
+      if (detail?.token === lastServerEventToken.current) return;
+
+      if (!chooseOpen) {
+        setAddedWhere(null);
+      }
+    };
+
+    window.addEventListener("ogma:public-playlist-item-added", onAdded as any);
+    window.addEventListener("ogma:public-playlist-item-removed", onRemoved as any);
+
+    return () => {
+      window.removeEventListener("ogma:public-playlist-item-added", onAdded as any);
+      window.removeEventListener("ogma:public-playlist-item-removed", onRemoved as any);
+    };
+  }, [matchesTrack, chooseOpen]);
 
   const commitDownload = async () => {
     setToast("sending"); hapticImpact("medium");
@@ -753,17 +858,39 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
           onPickServer={async (p) => {
             setAddingRemote(true);
             try {
-              await addItemToPlaylist(p.id, t.id);
+              const playlistId = String(p.id);
+              await addItemToPlaylist(playlistId, t.id);
               const clean = (p.handle || "").toString().replace(/^@/, "");
               setAddedWhere(clean ? `@${clean}` : null);
-              setServerContains((m) => ({ ...m, [p.id]: true }));
+              setServerContains((m) => ({ ...m, [playlistId]: true }));
               setToast("added");
               hapticImpact("medium");
 
-              if (clean && typeof window !== "undefined") {
+              if (typeof window !== "undefined") {
+                const token =
+                  typeof (globalThis as any).crypto?.randomUUID === "function"
+                    ? (globalThis as any).crypto.randomUUID()
+                    : `pl-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                lastServerEventToken.current = token;
+                let detailTrack: any;
+                try {
+                  if (typeof (globalThis as any).structuredClone === "function") {
+                    detailTrack = (globalThis as any).structuredClone(t);
+                  } else {
+                    detailTrack = JSON.parse(JSON.stringify(t));
+                  }
+                } catch {
+                  detailTrack = { ...t };
+                }
                 window.dispatchEvent(
                   new CustomEvent("ogma:public-playlist-item-added", {
-                    detail: { handle: clean.toLowerCase(), track: t },
+                    detail: {
+                      playlistId,
+                      handle: clean || null,
+                      playlistTitle: p.title ?? null,
+                      track: detailTrack,
+                      token,
+                    },
                   })
                 );
               }

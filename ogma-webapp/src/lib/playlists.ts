@@ -1,5 +1,6 @@
 // src/lib/playlists.ts
 import type { Track } from "@/types/types";
+import { API_BASE, getInitData } from "@/lib/api";
 
 export type Playlist = {
   id: string;
@@ -27,7 +28,7 @@ function getCsrfFromCookies() {
   return m ? decodeURIComponent(m[1]) : null;
 }
 function authHeaders(extra?: HeadersInit): HeadersInit {
-  const initData = (window as any)?.Telegram?.WebApp?.initData || "";
+  const initData = getInitData();
   const csrf = getCsrfFromCookies();
   return {
     Accept: "application/json",
@@ -38,8 +39,12 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
   };
 }
 
+const join = (base: string, path: string) =>
+  new URL(path.replace(/^\/+/, ""), base.endsWith("/") ? base : `${base}/`).toString();
+
 async function req<T = any>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, { credentials: "include", ...init });
+  const target = /^https?:\/\//i.test(url) ? url : join(API_BASE, url);
+  const r = await fetch(target, { credentials: "include", ...init });
   const body = await parse(r);
   if (!r.ok) {
     const err: any =
@@ -175,10 +180,17 @@ export async function updatePlaylist(
       return await call();
     } catch (err: any) {
       lastError = err;
-      const status = err?.status;
-      const message = String(err?.detail || err?.message || "");
+      const rawStatus = typeof err?.status === "number" ? err.status : undefined;
+      const status = rawStatus === 0 ? undefined : rawStatus;
+      const messageRaw = String(err?.detail || err?.message || "");
+      const message = messageRaw.toLowerCase();
       if (status && status !== 404 && status !== 405) {
         throw err;
+      }
+      if (!status) {
+        if (/failed to fetch|network ?error|load failed|typeerror|cors|networkerr/i.test(message)) {
+          continue;
+        }
       }
       if (!/method not allowed|not found/i.test(message)) {
         throw err;

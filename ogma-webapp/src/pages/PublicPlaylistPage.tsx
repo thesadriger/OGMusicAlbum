@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Track } from "@/types/types";
 import { TrackCard } from "@/components/TrackCard";
 import EditPlaylistModal from "@/components/EditPlaylistModal";
@@ -42,6 +42,7 @@ export default function PublicPlaylistPage({
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [editTarget, setEditTarget] = useState<any | null>(null);
+  const lastPlaylistEventTokenRef = useRef<string | null>(null);
   const { me } = useMe();
   const normalizedRouteHandle = handle.replace(/^@/, "").toLowerCase();
 
@@ -96,6 +97,103 @@ export default function PublicPlaylistPage({
     })();
     return () => { dead = true; };
   }, [handle]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const matchesPlaylist = (detail: any) => {
+      const pid = detail?.playlistId ?? detail?.playlist_id ?? null;
+      if (pid && info?.id && String(info.id) === String(pid)) return true;
+      const handleRaw = detail?.handle;
+      if (handleRaw) {
+        const clean = String(handleRaw).replace(/^@/, "").toLowerCase();
+        if (clean === normalizedRouteHandle) return true;
+      }
+      return false;
+    };
+
+    const tracksEqual = (a: any, b: any) => {
+      if (!a || !b) return false;
+      if (a.id && b.id && String(a.id) === String(b.id)) return true;
+      const msgA = a.msgId ?? a.msg_id ?? null;
+      const msgB = b.msgId ?? b.msg_id ?? null;
+      if (msgA != null && msgB != null) {
+        const chatA = (a.chat ?? a.chat_username ?? a.chatUsername ?? "")
+          .toString()
+          .replace(/^@/, "")
+          .toLowerCase();
+        const chatB = (b.chat ?? b.chat_username ?? b.chatUsername ?? "")
+          .toString()
+          .replace(/^@/, "")
+          .toLowerCase();
+        if (Number(msgA) === Number(msgB)) {
+          if (!chatA || !chatB) return true;
+          return chatA === chatB;
+        }
+      }
+      return false;
+    };
+
+    const onAdded = (event: Event) => {
+      const detail = (event as CustomEvent<any>)?.detail ?? {};
+      if (detail?.token && detail.token === lastPlaylistEventTokenRef.current) return;
+      if (!matchesPlaylist(detail)) return;
+      const track = detail.track ?? detail;
+      if (!track) return;
+      let appended = false;
+      setItems((prev) => {
+        if (prev.some((item) => tracksEqual(item, track))) return prev;
+        appended = true;
+        return [track, ...prev];
+      });
+      if (appended) {
+        setInfo((prev: any) => {
+          if (!prev) return prev;
+          const base =
+            typeof prev.item_count === "number"
+              ? prev.item_count
+              : Array.isArray(prev.items)
+                ? prev.items.length
+                : 0;
+          return { ...prev, item_count: base + 1 };
+        });
+      }
+    };
+
+    const onRemoved = (event: Event) => {
+      const detail = (event as CustomEvent<any>)?.detail ?? {};
+      if (detail?.token && detail.token === lastPlaylistEventTokenRef.current) return;
+      if (!matchesPlaylist(detail)) return;
+      const track = detail.track ?? detail;
+      if (!track) return;
+      let removed = false;
+      setItems((prev) => {
+        const next = prev.filter((item) => !tracksEqual(item, track));
+        removed = removed || next.length !== prev.length;
+        return next;
+      });
+      if (removed) {
+        setInfo((prev: any) => {
+          if (!prev) return prev;
+          const base =
+            typeof prev.item_count === "number"
+              ? prev.item_count
+              : Array.isArray(prev.items)
+                ? prev.items.length
+                : 0;
+          return { ...prev, item_count: Math.max(0, base - 1) };
+        });
+      }
+    };
+
+    window.addEventListener("ogma:public-playlist-item-added", onAdded as any);
+    window.addEventListener("ogma:public-playlist-item-removed", onRemoved as any);
+
+    return () => {
+      window.removeEventListener("ogma:public-playlist-item-added", onAdded as any);
+      window.removeEventListener("ogma:public-playlist-item-removed", onRemoved as any);
+    };
+  }, [info?.id, info?.handle, normalizedRouteHandle]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -183,7 +281,75 @@ export default function PublicPlaylistPage({
               mode="playlist"
               onRemoveFromPublic={async (track) => {
                 await removeItemFromPublicPlaylistByHandle(handle, track);
-                setItems(prev => prev.filter(x => x.id !== track.id && (x as any).msgId !== (track as any).msgId));
+                let removed = false;
+                setItems((prev) => {
+                  const next = prev.filter((x) => {
+                    if (!x) return true;
+                    if (x.id && track.id && String(x.id) === String(track.id)) {
+                      return false;
+                    }
+                    const xMsg = (x as any).msgId ?? (x as any).msg_id ?? null;
+                    const tMsg = (track as any).msgId ?? (track as any).msg_id ?? null;
+                    if (xMsg != null && tMsg != null) {
+                      const xChat = (x as any).chat ?? (x as any).chat_username ?? (x as any).chatUsername ?? "";
+                      const tChat = (track as any).chat ?? (track as any).chat_username ?? (track as any).chatUsername ?? "";
+                      const cleanX = String(xChat).replace(/^@/, "").toLowerCase();
+                      const cleanT = String(tChat).replace(/^@/, "").toLowerCase();
+                      if (Number(xMsg) === Number(tMsg)) {
+                        if (!cleanX || !cleanT || cleanX === cleanT) {
+                          return false;
+                        }
+                      }
+                    }
+                    return true;
+                  });
+                  removed = removed || next.length !== prev.length;
+                  return next;
+                });
+                if (removed) {
+                  setInfo((prev: any) => {
+                    if (!prev) return prev;
+                    const base =
+                      typeof prev.item_count === "number"
+                        ? prev.item_count
+                        : Array.isArray(prev.items)
+                          ? prev.items.length
+                          : 0;
+                    return { ...prev, item_count: Math.max(0, base - 1) };
+                  });
+                }
+                if (typeof window !== "undefined") {
+                  const token =
+                    typeof (globalThis as any).crypto?.randomUUID === "function"
+                      ? (globalThis as any).crypto.randomUUID()
+                      : `pl-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                  lastPlaylistEventTokenRef.current = token;
+                  let detailTrack: any;
+                  try {
+                    if (typeof (globalThis as any).structuredClone === "function") {
+                      detailTrack = (globalThis as any).structuredClone(track);
+                    } else {
+                      detailTrack = JSON.parse(JSON.stringify(track));
+                    }
+                  } catch {
+                    detailTrack = { ...track };
+                  }
+                  const playlistIdStr = info?.id ? String(info.id) : null;
+                  const cleanHandle = (info?.handle ?? handle ?? "")
+                    .toString()
+                    .replace(/^@/, "");
+                  window.dispatchEvent(
+                    new CustomEvent("ogma:public-playlist-item-removed", {
+                      detail: {
+                        playlistId: playlistIdStr,
+                        handle: cleanHandle || normalizedRouteHandle,
+                        playlistTitle: info?.title ?? null,
+                        track: detailTrack,
+                        token,
+                      },
+                    })
+                  );
+                }
               }}
             />
           ))}

@@ -1,13 +1,23 @@
 import { defineConfig, type Plugin, type ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
-import httpProxy from "http-proxy";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+
+let httpProxy: any = null;
+try {
+  httpProxy = require("http-proxy");
+} catch {
+  httpProxy = null;
+}
 import type { IncomingMessage, ServerResponse } from "http";
 
 const API_PROXY_TARGET =
   process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8080";
 
-function enhanceProxyLogging(proxy: httpProxy) {
+function enhanceProxyLogging(proxy: any) {
+  if (!proxy) return;
   proxy.on(
     "proxyReq",
     (
@@ -49,8 +59,7 @@ function createApiProxyOptions(): ProxyOptions {
     ws: false,
     secure: false,
     configure(proxy) {
-      // vite тут даёт нам не совсем тот тип, TS думает "unknown"
-      enhanceProxyLogging(proxy as unknown as httpProxy);
+      enhanceProxyLogging(proxy as any);
     },
   } satisfies ProxyOptions;
 }
@@ -60,6 +69,7 @@ function previewProxyPlugin(): Plugin {
     name: "ogma-preview-proxy",
     apply: "serve",
     configurePreviewServer(server) {
+      if (!httpProxy) return;
       const proxy = httpProxy.createProxyServer({
         target: API_PROXY_TARGET,
         changeOrigin: true,

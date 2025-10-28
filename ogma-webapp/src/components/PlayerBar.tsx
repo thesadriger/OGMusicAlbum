@@ -60,7 +60,7 @@ export function PlayerBar({
     if (!paused) {
       a.play().catch(() => { /* autoplay guard */ });
     }
-  }, [now?.id, now?.msgId, now?.chat]); // источник трека меняется — обновляем src
+  }, [now?.id, now?.msgId, now?.chat, now?.playlistContext?.id, now?.playlistContext?.handle]); // источник трека меняется — обновляем src/контекст
 
   // реакция на изменение paused снаружи
   useEffect(() => {
@@ -101,6 +101,9 @@ export function PlayerBar({
               if (playlistCtx?.id) {
                 body.playlist_id = playlistCtx.id;
               }
+              if (playlistCtx?.handle) {
+                body.playlist_handle = playlistCtx.handle;
+              }
           if ((now as any).chat && (now as any).msgId) {
             body.chat = String((now as any).chat).replace(/^@/, "");
             body.msg_id = (now as any).msgId;
@@ -123,7 +126,7 @@ export function PlayerBar({
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [now?.id, now?.msgId, now?.chat]);
+  }, [now?.id, now?.msgId, now?.chat, now?.playlistContext?.id, now?.playlistContext?.handle]);
 
   return (
     <div className="fixed inset-x-0 bottom-0 border-t bg-white/80 dark:bg-zinc-950/80 backdrop-blur p-3">

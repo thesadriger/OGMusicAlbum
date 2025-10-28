@@ -36,7 +36,6 @@ function createApiProxyOptions(): ProxyOptions {
 function previewProxyPlugin(): Plugin {
   return {
     name: "ogma-preview-proxy",
-    apply: "serve",
     configurePreviewServer(server) {
       const proxy = createProxyServer({
         target: API_PROXY_TARGET,

@@ -124,7 +124,7 @@ pip install -r app/indexer/requirements.txt
 
 | Переменная | Описание |
 |------------|----------|
-| `PG_DSN` | DSN PostgreSQL, например `postgresql://ogma:ogma@127.0.0.1:5433/ogma`. Используется всеми сервисами. |
+| `PG_DSN` | DSN PostgreSQL, например `postgresql://user:user@127.0.0.1:8080/user`. Используется всеми сервисами. |
 | `MEILI_HOST`, `MEILI_KEY` | Хост и ключ Meilisearch. Обязательны для бэкенда и индексатора. |
 | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` | API-данные Telegram (https://my.telegram.org). |
 | `TELEGRAM_SESSION` | Путь к файлу сессии Telethon для стримингового сервиса. |

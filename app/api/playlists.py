@@ -365,12 +365,11 @@ async def create_playlist(
     return dict(row)
 
 
-@router.patch("/playlists/{playlist_id}")
-async def update_playlist(
+async def _perform_playlist_update(
     playlist_id: str,
-    payload: PlaylistUpdate = Body(...),
-    pool: asyncpg.Pool = Depends(_get_pool),
-    user_id: int = Depends(get_current_user),
+    payload: PlaylistUpdate,
+    pool: asyncpg.Pool,
+    user_id: int,
 ):
     try:
         pid = uuid.UUID(playlist_id)
@@ -446,6 +445,83 @@ async def update_playlist(
             raise HTTPException(409, "Failed to update playlist")
 
     return dict(updated)
+
+
+@router.patch("/playlists/{playlist_id}")
+async def update_playlist(
+    playlist_id: str,
+    payload: PlaylistUpdate = Body(...),
+    pool: asyncpg.Pool = Depends(_get_pool),
+    user_id: int = Depends(get_current_user),
+):
+    return await _perform_playlist_update(
+        playlist_id=playlist_id, payload=payload, pool=pool, user_id=user_id
+    )
+
+
+def _get_method_override(request: Request) -> Optional[str]:
+    override = request.query_params.get("_method")
+    if not override:
+        override = request.headers.get("X-HTTP-Method-Override")
+    if not override:
+        override = request.headers.get("X-Http-Method-Override")
+    return override.upper() if override else None
+
+
+async def _parse_override_payload(request: Request) -> PlaylistUpdate:
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip()
+
+    if content_type == "application/json":
+        data = await request.json()
+    elif content_type in {
+        "application/x-www-form-urlencoded",
+        "multipart/form-data",
+    }:
+        form = await request.form()
+        data = {}
+        for key, value in form.multi_items():
+            if key == "_method":
+                continue
+            if key == "handle_null":
+                # form encodes handle=null as empty string + flag
+                data.setdefault("handle", None)
+                continue
+            if key in {"title", "handle", "is_public"}:
+                data[key] = value
+        if "is_public" in data:
+            data["is_public"] = str(data["is_public"]).lower() in {"1", "true", "yes"}
+        if "handle" in data and data["handle"] == "":
+            data["handle"] = None
+    elif not content_type:
+        data = await request.json()
+    else:
+        raise HTTPException(415, "Unsupported Media Type")
+
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Invalid payload")
+
+    # Query parameters may contain overrides for null handle when using JSON body
+    if data.get("handle") == "" and request.query_params.get("handle_null"):
+        data["handle"] = None
+
+    return PlaylistUpdate(**data)
+
+
+@router.post("/playlists/{playlist_id}")
+async def override_update_playlist(
+    request: Request,
+    playlist_id: str,
+    pool: asyncpg.Pool = Depends(_get_pool),
+    user_id: int = Depends(get_current_user),
+):
+    override = _get_method_override(request)
+    if override not in {"PATCH"}:
+        raise HTTPException(status.HTTP_405_METHOD_NOT_ALLOWED, "Method not allowed")
+
+    payload = await _parse_override_payload(request)
+    return await _perform_playlist_update(
+        playlist_id=playlist_id, payload=payload, pool=pool, user_id=user_id
+    )
 
 
 @router.patch("/playlists/{playlist_id}/handle", status_code=status.HTTP_200_OK)

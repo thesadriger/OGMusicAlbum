@@ -13,6 +13,8 @@ import time
 import urllib.parse
 from typing import Optional
 
+import ipaddress
+
 from fastapi import Request
 
 # --- Configuration -----------------------------------------------------------------
@@ -107,12 +109,57 @@ def _verify_tg_initdata(raw: Optional[str]) -> Optional[int]:
     return None
 
 
+def _is_loopback(host: str) -> bool:
+    host = (host or "").split("%")[0].strip().lower()
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _forwarded_for_hosts(request: Request) -> list[str]:
+    """Extract potential original client hosts from standard proxy headers."""
+    hosts: list[str] = []
+
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        hosts.extend(h.strip() for h in xff.split(",") if h.strip())
+
+    x_real_ip = request.headers.get("x-real-ip")
+    if x_real_ip:
+        hosts.append(x_real_ip.strip())
+
+    forwarded = request.headers.get("forwarded")
+    if forwarded:
+        for segment in forwarded.split(","):
+            for part in segment.split(";"):
+                part = part.strip()
+                if part.lower().startswith("for="):
+                    value = part[4:].strip()
+                    if value.startswith("\"") and value.endswith("\""):
+                        value = value[1:-1]
+                    if value.startswith("[") and value.endswith("]"):
+                        value = value[1:-1]
+                    hosts.append(value)
+    return hosts
+
+
 def _looks_like_localhost(request: Request) -> bool:
     """Cheap heuristic: treat loopback connections as safe for debug headers."""
     client = request.client
     host = (client.host if client else "") or ""
-    host = host.split("%")[0]
-    return host in {"127.0.0.1", "::1", "localhost"}
+    if not _is_loopback(host):
+        return False
+
+    for forwarded_host in _forwarded_for_hosts(request):
+        if not _is_loopback(forwarded_host):
+            return False
+
+    return True
 
 
 def resolve_user_id(request: Request) -> Optional[int]:

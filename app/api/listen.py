@@ -299,7 +299,7 @@ async def me_listen(payload: ListenIn, request: Request):
 async def me_listen_seconds(
     request: Request,
     period: str = "all",
-    scope: str = "playlists",
+    scope: str | None = None,
 ):
     uid = _maybe_user_id(request)
     if not uid:
@@ -311,13 +311,17 @@ async def me_listen_seconds(
 
     await _ensure_schema(pool)
 
-    scope_norm = (scope or "playlists").strip().lower()
+    scope_norm = (scope or "").strip().lower()
+
     if scope_norm in {"playlists", "playlist", "received"}:
         if period and (period or "").strip().lower() not in {"", "all", "*", "total"}:
             raise HTTPException(400, "Period is not supported for playlist totals")
         async with pool.acquire() as con:
             total = await _owner_total_seconds(con, int(uid))
         return {"seconds": int(total)}
+
+    if scope_norm not in {"", "tracks", "track"}:
+        raise HTTPException(400, "Unsupported scope")
 
     period_norm = (period or "all").strip().lower()
     today = datetime.now(timezone.utc).date()

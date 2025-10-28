@@ -84,11 +84,108 @@ export async function updatePlaylist(
   if (payload.handle !== undefined) body.handle = payload.handle;
   if (payload.is_public !== undefined) body.is_public = payload.is_public;
 
-  return req<Playlist>(`/api/playlists/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(body),
-  });
+  const baseUrl = `/api/playlists/${encodeURIComponent(id)}`;
+  const urlVariants = [baseUrl];
+  if (!baseUrl.endsWith("/")) {
+    urlVariants.push(`${baseUrl}/`);
+  }
+
+  const json = JSON.stringify(body);
+  const jsonHeaders = () => authHeaders({ "Content-Type": "application/json" });
+
+  const attempts: Array<() => Promise<Playlist>> = [];
+  const overrideTokens = ["PATCH", "patch"];
+  const withMethodOverride = (url: string, token: string) =>
+    url.includes("?") ? `${url}&_method=${token}` : `${url}?_method=${token}`;
+  const formBody = (token: string) => {
+    const params = new URLSearchParams();
+    params.set("_method", token);
+    if (payload.title !== undefined) params.set("title", payload.title);
+    if (payload.handle !== undefined) {
+      if (payload.handle === null) {
+        params.set("handle", "");
+        params.set("handle_null", "1");
+      } else {
+        params.set("handle", payload.handle);
+      }
+    }
+    if (payload.is_public !== undefined) {
+      params.set("is_public", payload.is_public ? "true" : "false");
+    }
+    return params.toString();
+  };
+
+  for (const url of urlVariants) {
+    attempts.push(() =>
+      req<Playlist>(url, {
+        method: "PATCH",
+        headers: jsonHeaders(),
+        body: json,
+      })
+    );
+  }
+
+  for (const url of urlVariants) {
+    attempts.push(() =>
+      req<Playlist>(url, {
+        method: "PUT",
+        headers: jsonHeaders(),
+        body: json,
+      })
+    );
+  }
+
+  for (const url of urlVariants) {
+    for (const token of overrideTokens) {
+      attempts.push(() =>
+        req<Playlist>(withMethodOverride(url, token), {
+          method: "POST",
+          headers: jsonHeaders(),
+          body: json,
+        })
+      );
+    }
+    for (const token of overrideTokens) {
+      attempts.push(() =>
+        req<Playlist>(url, {
+          method: "POST",
+          headers: authHeaders({
+            "Content-Type": "application/json",
+            "X-HTTP-Method-Override": token,
+          }),
+          body: json,
+        })
+      );
+      attempts.push(() =>
+        req<Playlist>(url, {
+          method: "POST",
+          headers: authHeaders({
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          }),
+          body: formBody(token),
+        })
+      );
+    }
+  }
+
+  let lastError: any;
+  for (const call of attempts) {
+    try {
+      return await call();
+    } catch (err: any) {
+      lastError = err;
+      const status = err?.status;
+      const message = String(err?.detail || err?.message || "");
+      if (status && status !== 404 && status !== 405) {
+        throw err;
+      }
+      if (!/method not allowed|not found/i.test(message)) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 export async function setPlaylistHandle(id: string, handle: string | null) {

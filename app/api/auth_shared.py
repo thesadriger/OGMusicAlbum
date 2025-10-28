@@ -117,9 +117,9 @@ def _looks_like_localhost(request: Request) -> bool:
 
 def resolve_user_id(request: Request) -> Optional[int]:
     """Return telegram/user id for the incoming request or ``None`` if absent."""
-    # 1) Explicit service headers always win because other routers already use them.
+    # 1) Explicit service headers are limited to localhost/debug runs for safety.
     x_uid = request.headers.get("x-user-id")
-    if x_uid and x_uid.isdigit():
+    if x_uid and x_uid.isdigit() and (_DEBUG_ALLOWED or _looks_like_localhost(request)):
         return int(x_uid)
 
     # 2) Bearer tokens (API JWT) behave the same way as in playlist APIs.

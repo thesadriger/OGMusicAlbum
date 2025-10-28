@@ -1,7 +1,6 @@
 // /home/ogma/ogma/ogma-webapp/src/components/TrackCard.tsx
-import { useEffect, useMemo, useRef, useState, useCallback, type ComponentType } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type ComponentType, type MutableRefObject } from "react";
 import Counter from "@/components/Counter";
-import { useAudioProgressForTrack } from "@/hooks/useAudioProgressForTrack";
 import type { Track } from "@/types/types";
 import { sendTrackToMe } from "@/lib/api";
 import { emitPlayTrack } from "@/hooks/usePlayerBus";
@@ -126,8 +125,6 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     return () => window.removeEventListener("ogma:theme-changed", onTheme as any);
   }, []);
 
-  const playing = !!isActive && !isPaused;
-
   async function hasTrackInServerPlaylist(playlistId: string, trackId: string): Promise<boolean> {
     const qs = (s: string) => encodeURIComponent(s);
     const tryPaths = [
@@ -173,33 +170,15 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   }
 
   // Прогресс трека
-  const resolve = useCallback(() => {
-    const audio = document.querySelector(`audio[data-track-id="${t.id}"]`) as HTMLAudioElement | null;
-    const isActiveTrack = !!(t.id && playing);
-    return { audio, isActive: isActiveTrack, currentTime: audio?.currentTime, duration: audio?.duration };
-  }, [t.id, playing]);
-
-  // объявляем getAudio ДО первого использования
-  const getAudio = () =>
-    document.querySelector(`audio[data-track-id="${t.id}"]`) as HTMLAudioElement | null;
-
-  const progress = useAudioProgressForTrack(t.id, resolve);
+  const getAudio = useCallback(() =>
+    document.querySelector(`audio[data-track-id="${t.id}"]`) as HTMLAudioElement | null,
+  [t.id]);
   const already = inPlaylist(t.id);
 
   // --- Таймер трека (мм:сс) ---
-  const a = getAudio();
-  const hasDur = !!a && Number.isFinite(a.duration) && a.duration > 0;
-
-  let currentSecExact = 0;
-  if (isActive) {
-    if (scrubbing && hasDur) currentSecExact = scrubPct * a!.duration;
-    else if (hasDur) currentSecExact = lastProgressRef.current * a!.duration;
-    else currentSecExact = a?.currentTime ?? 0;
-  }
-  const currentSec = Math.max(0, Math.floor(currentSecExact));
-  const mm = Math.floor(currentSec / 60);
-  const ss = currentSec % 60;
-  const showTimer = isActive && (hasDur || currentSec > 0);
+  const audioEl = getAudio();
+  const hasDur = !!audioEl && Number.isFinite(audioEl.duration) && audioEl.duration > 0;
+  const showTimer = isActive && (hasDur || lastProgressRef.current > 0 || scrubbing);
 
 
 
@@ -256,16 +235,6 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
       : {};
 
   // --- ВЫНЕСЕННЫЕ ЭФФЕКТЫ ---
-
-  // 1) держим lastProgressRef актуальным
-  useEffect(() => {
-    if (isActive) {
-      const val = typeof progress === "number" ? progress : 0;
-      if (Number.isFinite(val)) lastProgressRef.current = clamp(val, 0, 1);
-    } else {
-      lastProgressRef.current = 0;
-    }
-  }, [isActive, progress]);
 
   // 2) глобально блокируем touchmove только во время скраба (iOS/TG overscroll)
   useEffect(() => {
@@ -471,7 +440,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     if (isActive) {
       if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
       holdTimer.current = window.setTimeout(() => {
-        const base = typeof progress === "number" ? progress : lastProgressRef.current;
+        const base = lastProgressRef.current;
         const pct0 = clamp(Number.isFinite(base as number) ? (base as number) : 0, 0, 1);
         scrubStart.current = { pct: pct0, x: downX, width: rect.width || 1 };
         setScrubPct(pct0);
@@ -628,23 +597,20 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
           <div className="absolute inset-0 z-0 pointer-events-none">
             {/* фон-анимация */}
             <div className="absolute inset-0 pointer-events-none opacity-70">
-              <BackgroundComp className="absolute inset-0 pointer-events-none" {...bgExtraProps} />
-            </div>
-
-            {/* СТЕКЛЯННЫЙ прогресс вместо bg-gray-500/50 */}
-            <div className="absolute inset-y-0 left-0 pointer-events-none z-[1]"
-              style={{ width: `${(scrubbing ? scrubPct : lastProgressRef.current) * 100}%` }}>
-              <GlassSurface
-                borderRadius={16}
-                backgroundOpacity={0.05}  // можно варьировать
-                saturation={1}
-                blur={25}
-                noBorder
-                noShadow
-                tone="light"
-                className="w-full h-full"  // ← будет работать, высота возьмётся из родителя (inset-y-0)
+              <BackgroundComp
+                key={`${bgVersion}:${forceBgMode ?? ""}:${forceBgKey ?? ""}`}
+                {...bgExtraProps}
               />
             </div>
+
+            <TrackProgressOverlay
+              trackId={t.id}
+              isActive={!!isActive}
+              getAudio={getAudio}
+              scrubbing={scrubbing}
+              scrubPct={scrubPct}
+              lastProgressRef={lastProgressRef}
+            />
           </div>
         )}
 
@@ -673,42 +639,15 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
             </div>
           </div>
 
-          {/* таймер мм:сс справа */}
-          {showTimer && (
-            <div
-              className="
-      absolute top-1.5 bottom-1.5 right-1.5
-      flex items-center rounded-md px-2
-      opacity-40  /* 40% видимости */
-    "
-            >
-              <Counter
-                value={mm}
-                places={[10, 1]}
-                fontSize={50}          /* крупнее */
-                padding={0}
-                gap={0}                /* меньше расстояние между цифрами */
-                textColor="white"
-                fontWeight={900}
-                gradientHeight={0}
-                digitStyle={{ width: '1ch' }}
-                counterStyle={{ lineHeight: 1 }}
-              />
-              <span className="mx-0.5 tabular-nums">:</span>
-              <Counter
-                value={ss}
-                places={[10, 1]}
-                fontSize={50}
-                padding={0}
-                gap={0}
-                textColor="white"
-                fontWeight={900}
-                gradientHeight={0}
-                digitStyle={{ width: '1ch' }}
-                counterStyle={{ lineHeight: 1 }}
-              />
-            </div>
-          )}
+          <TrackTimer
+            trackId={t.id}
+            isActive={!!isActive}
+            getAudio={getAudio}
+            show={showTimer}
+            scrubbing={scrubbing}
+            scrubPct={scrubPct}
+            lastProgressRef={lastProgressRef}
+          />
         </div>
 
         {toast && (
@@ -765,6 +704,298 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
             setChooseOpen(false);
           }
         }}
+      />
+    </div>
+  );
+}
+
+type TrackProgressOverlayProps = {
+  trackId: string | number;
+  isActive: boolean;
+  getAudio: () => HTMLAudioElement | null;
+  scrubbing: boolean;
+  scrubPct: number;
+  lastProgressRef: MutableRefObject<number>;
+};
+
+function TrackProgressOverlay({ trackId, isActive, getAudio, scrubbing, scrubPct, lastProgressRef }: TrackProgressOverlayProps) {
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const scrubbingRef = useRef(scrubbing);
+
+  const setWidth = useCallback((pct: number) => {
+    const node = barRef.current;
+    if (!node) return;
+    const clamped = clamp(pct, 0, 1);
+    node.style.width = `${clamped * 100}%`;
+  }, []);
+
+  useEffect(() => {
+    scrubbingRef.current = scrubbing;
+  }, [scrubbing]);
+
+  useEffect(() => {
+    if (scrubbing) {
+      setWidth(scrubPct);
+      return;
+    }
+    setWidth(lastProgressRef.current);
+  }, [scrubbing, scrubPct, lastProgressRef, setWidth]);
+
+  useEffect(() => {
+    let running = false;
+
+    const stop = () => {
+      running = false;
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+
+    if (!isActive) {
+      stop();
+      lastProgressRef.current = 0;
+      if (!scrubbingRef.current) setWidth(0);
+      return () => { stop(); };
+    }
+
+    const audio = getAudio();
+    if (!audio) {
+      lastProgressRef.current = 0;
+      setWidth(0);
+      return () => { stop(); };
+    }
+
+    const updateFromAudio = () => {
+      const dur = audio.duration;
+      if (Number.isFinite(dur) && dur > 0) {
+        const pct = clamp(audio.currentTime / dur, 0, 1);
+        lastProgressRef.current = pct;
+        if (!scrubbingRef.current) setWidth(pct);
+      }
+    };
+
+    const loop = () => {
+      updateFromAudio();
+      if (running) rafRef.current = requestAnimationFrame(loop);
+    };
+
+    const start = () => {
+      if (running) return;
+      running = true;
+      rafRef.current = requestAnimationFrame(loop);
+    };
+
+    const handlePause = () => {
+      updateFromAudio();
+      stop();
+    };
+
+    const handleEnded = () => {
+      stop();
+      lastProgressRef.current = 0;
+      setWidth(0);
+    };
+
+    audio.addEventListener("timeupdate", updateFromAudio);
+    audio.addEventListener("durationchange", updateFromAudio);
+    audio.addEventListener("play", start);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
+
+    updateFromAudio();
+    if (!audio.paused) start();
+
+    return () => {
+      stop();
+      audio.removeEventListener("timeupdate", updateFromAudio);
+      audio.removeEventListener("durationchange", updateFromAudio);
+      audio.removeEventListener("play", start);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [trackId, isActive, getAudio, lastProgressRef, setWidth]);
+
+  return (
+    <div
+      ref={barRef}
+      className="absolute inset-y-0 left-0 pointer-events-none z-[1]"
+      style={{ width: `${lastProgressRef.current * 100}%` }}
+    >
+      <GlassSurface
+        borderRadius={16}
+        backgroundOpacity={0.05}
+        saturation={1}
+        blur={25}
+        noBorder
+        noShadow
+        tone="light"
+        className="w-full h-full"
+      />
+    </div>
+  );
+}
+
+type TrackTimerProps = {
+  trackId: string | number;
+  isActive: boolean;
+  getAudio: () => HTMLAudioElement | null;
+  show: boolean;
+  scrubbing: boolean;
+  scrubPct: number;
+  lastProgressRef: MutableRefObject<number>;
+};
+
+function TrackTimer({ trackId, isActive, getAudio, show, scrubbing, scrubPct, lastProgressRef }: TrackTimerProps) {
+  const [mm, setMm] = useState(0);
+  const [ss, setSs] = useState(0);
+  const rafRef = useRef<number | null>(null);
+  const durationRef = useRef(0);
+  const lastSecRef = useRef(-1);
+  const scrubbingRef = useRef(scrubbing);
+
+  const applySeconds = useCallback((seconds: number, force = false) => {
+    const clamped = Math.max(0, Math.floor(seconds));
+    if (!force && clamped === lastSecRef.current) return;
+    lastSecRef.current = clamped;
+    const minutes = Math.floor(clamped / 60);
+    const secs = clamped % 60;
+    setMm((prev) => (prev === minutes ? prev : minutes));
+    setSs((prev) => (prev === secs ? prev : secs));
+  }, []);
+
+  useEffect(() => {
+    scrubbingRef.current = scrubbing;
+  }, [scrubbing]);
+
+  useEffect(() => {
+    let running = false;
+
+    const stop = () => {
+      running = false;
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+
+    if (!show) {
+      stop();
+      return () => { stop(); };
+    }
+
+    const audio = getAudio();
+
+    if (!audio || !isActive) {
+      stop();
+      if (!scrubbingRef.current) {
+        lastSecRef.current = -1;
+        applySeconds(lastProgressRef.current * (durationRef.current || 0), true);
+      }
+      return () => { stop(); };
+    }
+
+    const update = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        durationRef.current = audio.duration;
+      }
+      applySeconds(audio.currentTime);
+      if (running) rafRef.current = requestAnimationFrame(update);
+    };
+
+    const start = () => {
+      if (running) return;
+      running = true;
+      rafRef.current = requestAnimationFrame(update);
+    };
+
+    const handlePause = () => {
+      update();
+      stop();
+    };
+
+    const handleEnded = () => {
+      stop();
+      durationRef.current = Number.isFinite(audio.duration) ? audio.duration : durationRef.current;
+      lastSecRef.current = -1;
+      applySeconds(0, true);
+    };
+
+    const handleDuration = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        durationRef.current = audio.duration;
+      }
+    };
+
+    audio.addEventListener("timeupdate", update);
+    audio.addEventListener("durationchange", handleDuration);
+    audio.addEventListener("play", start);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
+
+    handleDuration();
+    update();
+    if (!audio.paused) start();
+
+    return () => {
+      stop();
+      audio.removeEventListener("timeupdate", update);
+      audio.removeEventListener("durationchange", handleDuration);
+      audio.removeEventListener("play", start);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [trackId, show, isActive, getAudio, applySeconds, lastProgressRef]);
+
+  useEffect(() => {
+    if (!show) return;
+    if (scrubbing) {
+      const audio = getAudio();
+      const duration = durationRef.current || audio?.duration || 0;
+      if (duration > 0) {
+        applySeconds(scrubPct * duration, true);
+      } else if (audio) {
+        applySeconds(audio.currentTime, true);
+      } else {
+        applySeconds(lastProgressRef.current * durationRef.current, true);
+      }
+    } else if (!isActive) {
+      lastSecRef.current = -1;
+      applySeconds(0, true);
+    }
+  }, [show, scrubbing, scrubPct, isActive, getAudio, applySeconds, lastProgressRef]);
+
+  if (!show) return null;
+
+  return (
+    <div
+      className="absolute top-1.5 bottom-1.5 right-1.5 flex items-center rounded-md px-2 opacity-40"
+    >
+      <Counter
+        value={mm}
+        places={[10, 1]}
+        fontSize={50}
+        padding={0}
+        gap={0}
+        textColor="white"
+        fontWeight={900}
+        gradientHeight={0}
+        digitStyle={{ width: "1ch" }}
+        counterStyle={{ lineHeight: 1 }}
+      />
+      <span className="mx-0.5 tabular-nums">:</span>
+      <Counter
+        value={ss}
+        places={[10, 1]}
+        fontSize={50}
+        padding={0}
+        gap={0}
+        textColor="white"
+        fontWeight={900}
+        gradientHeight={0}
+        digitStyle={{ width: "1ch" }}
+        counterStyle={{ lineHeight: 1 }}
       />
     </div>
   );

@@ -244,15 +244,6 @@ async def _ensure_playlists_table(pool: asyncpg.Pool) -> None:
     alter table playlists alter column id set default gen_random_uuid();
     alter table playlists alter column handle drop not null;
 
-    alter table playlists add column if not exists user_id bigint not null references users(telegram_id) on delete cascade;
-    alter table playlists add column if not exists title text;
-    alter table playlists add column if not exists description text;
-    alter table playlists add column if not exists cover_url text;
-    alter table playlists add column if not exists handle text;
-    alter table playlists add column if not exists is_public boolean not null default false;
-    alter table playlists add column if not exists kind text not null default 'custom';
-    alter table playlists add column if not exists updated_at timestamptz default now();
-
     do $$
     begin
         if exists (
@@ -265,6 +256,15 @@ async def _ensure_playlists_table(pool: asyncpg.Pool) -> None:
             alter table playlists rename column owner_id to user_id;
         end if;
     end $$;
+
+     alter table playlists add column if not exists user_id bigint not null references users(telegram_id) on delete cascade;
+    alter table playlists add column if not exists title text;
+    alter table playlists add column if not exists description text;
+    alter table playlists add column if not exists cover_url text;
+    alter table playlists add column if not exists handle text;
+    alter table playlists add column if not exists is_public boolean not null default false;
+    alter table playlists add column if not exists kind text not null default 'custom';
+    alter table playlists add column if not exists updated_at timestamptz default now();
 
     alter table playlists alter column user_id set not null;
 
@@ -1048,11 +1048,12 @@ async def universal_search(
     _viewer_id: int = Depends(_current_user_id),  # требуем авторизацию
     pool: asyncpg.Pool = Depends(_get_pool),
 ):
-"""
+    """
     Универсальный поиск по строке q (эндпоинт /api/search/universal):
       - если начинается с '@' — это ок, снимем префикс и нормализуем;
       - ищем точное совпадение user.username и playlist.handle (lower(...) = lower($1));
       - если точных совпадений нет/мало — даём короткие списки по префиксу (autocomplete).
+
     Возвращаем:
       {
         "query": исходная_строка,
@@ -1062,6 +1063,7 @@ async def universal_search(
         "playlists": [...]     # подсказки плейлистов
       }
     """
+
     # нормализация
     term_raw = q.strip()
     term = term_raw[1:].strip() if term_raw.startswith("@") else term_raw
@@ -1210,6 +1212,7 @@ async def universal_search(
             data.setdefault("owner_id", data["user_id"])
         return data
 
+    # соберём список юзеров
     users_out = [_row_to_dict(r) for r in users_like]
     if user_exact:
         user_dict = _row_to_dict(user_exact)
@@ -1217,9 +1220,11 @@ async def universal_search(
             u
             for u in users_out
             if not u.get("username")
-            or u["username"].lower() != str(user_dict.get("username", "")).lower()
+            or u["username"].lower()
+            != str(user_dict.get("username", "")).lower()
         ]
 
+    # соберём списки плейлистов
     playlists_acc: List[Dict[str, Any]] = []
     seen_ids: Set[str] = set()
 
@@ -1245,7 +1250,7 @@ async def universal_search(
     if len(playlists_acc) < limit:
         _push(list(playlists_owner))
 
-    # Выберем primary: по UX логике сперва user, потом playlist
+    # primary для UX
     primary = None
     if user_exact and not playlist_exact:
         primary = {"kind": "user", "data": _row_to_dict(user_exact)}
@@ -1259,8 +1264,11 @@ async def universal_search(
         "users": users_out[:limit],
         "playlists": playlists_acc[:limit],
     }
+
+    # кладём в кэш
     _search_cache_put(cache_key, result_core)
 
+    # финальный ответ
     return {"query": q, "term": term, **result_core}
 
 

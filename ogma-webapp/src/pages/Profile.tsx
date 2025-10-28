@@ -5,6 +5,7 @@ import type { Track } from "@/types/types";
 import { goHome, goPlaylistHandle } from "@/lib/router";
 import { apiGet } from "@/lib/api";
 import CreatePlaylistModal from "@/components/CreatePlaylistModal";
+import EditPlaylistModal from "@/components/EditPlaylistModal";
 import { listMyPlaylists, deletePlaylist, getPlaylist } from "@/lib/playlists";
 import SwipePlaylistRow from "@/components/SwipePlaylistRow";
 
@@ -254,6 +255,7 @@ export default function ProfilePage({ nowId, paused, embedded = false }: Profile
   const [localQ, setLocalQ] = React.useState<string>("");
   const [modalOpen, setModalOpen] = React.useState(false);
   const [myPlaylists, setMyPlaylists] = React.useState<any[]>([]);
+  const [editPlaylistTarget, setEditPlaylistTarget] = React.useState<any | null>(null);
 
   // модалка «Настройки»
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -394,6 +396,17 @@ export default function ProfilePage({ nowId, paused, embedded = false }: Profile
     return () => {
       dead = true;
     };
+  }, []);
+
+  React.useEffect(() => {
+    const onRefresh = async () => {
+      try {
+        const r = await listMyPlaylists();
+        setMyPlaylists(r.items || []);
+      } catch { }
+    };
+    window.addEventListener("ogma:myplaylists-change" as any, onRefresh as any);
+    return () => window.removeEventListener("ogma:myplaylists-change" as any, onRefresh as any);
   }, []);
 
   // ——— счётчики для модалки настроек ———
@@ -632,6 +645,13 @@ export default function ProfilePage({ nowId, paused, embedded = false }: Profile
                     } catch { }
                   }
                 }}
+                onEdit={(pl) => {
+                  setEditPlaylistTarget({
+                    ...pl,
+                    id: String(pl.id),
+                    handle: pl.handle ?? null,
+                  });
+                }}
               />
             ))}
           </div>
@@ -676,6 +696,27 @@ export default function ProfilePage({ nowId, paused, embedded = false }: Profile
         onCreated={(p) => {
           setMyPlaylists((prev) => [p, ...prev]);
           setModalOpen(false);
+          (async () => {
+            try {
+              const r = await listMyPlaylists();
+              setMyPlaylists(r.items || []);
+            } catch { }
+          })();
+        }}
+      />
+      <EditPlaylistModal
+        open={Boolean(editPlaylistTarget)}
+        playlist={editPlaylistTarget}
+        onClose={() => setEditPlaylistTarget(null)}
+        onUpdated={(updated) => {
+          setEditPlaylistTarget(null);
+          setMyPlaylists((prev) =>
+            prev.map((pl) =>
+              String(pl.id) === String(updated.id)
+                ? { ...pl, ...updated }
+                : pl
+            )
+          );
           (async () => {
             try {
               const r = await listMyPlaylists();

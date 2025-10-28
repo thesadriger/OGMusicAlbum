@@ -117,22 +117,40 @@ export default function GlobalSearch({
 
           accTracks.push(...pageHits);
 
-          // Плейлисты по handle — только на первой странице достаточно
-          if (i === 0 && Array.isArray((resp as UniversalSearchResp)?.playlists)) {
-            const pls = (resp as UniversalSearchResp).playlists!
+          // Плейлисты — собираем из секции playlists (hits/массив)
+          if (i === 0) {
+            const section: any = (resp as UniversalSearchResp)?.playlists ?? (resp as any)?.playlists;
+            let raw: any[] = [];
+            if (Array.isArray(section)) {
+              raw = section;
+            } else if (section && Array.isArray(section.hits)) {
+              raw = section.hits;
+            }
+
+            const pls = raw
               .filter(Boolean)
-              .map((p) => ({
-                id: String(p.id),
-                title: p.title,
-                handle: p.handle ?? null,
-                is_public: p.is_public,
-                isPrivate: p.isPrivate,
-                coverUrl: p.coverUrl ?? null,
-                tracksCount: p.tracksCount ?? null,
-              })) as PlaylistLite[];
+              .map((p) => {
+                const id = p.id ?? p.playlist_id ?? p.playlistId ?? p.uuid ?? null;
+                const handle = p.handle ?? p.slug ?? null;
+                return {
+                  id: id != null ? String(id) : "",
+                  title: p.title || p.name || "",
+                  handle: handle ? String(handle).replace(/^@/, "") : null,
+                  is_public: p.is_public ?? p.isPublic ?? p.public ?? (p.isPrivate === true ? false : undefined),
+                  isPrivate: p.isPrivate ?? (p.is_public === false),
+                  coverUrl: p.coverUrl ?? p.cover_url ?? null,
+                  tracksCount:
+                    p.tracksCount ??
+                    p.tracks_count ??
+                    p.itemsCount ??
+                    p.item_count ??
+                    p.count ??
+                    null,
+                } as PlaylistLite;
+              })
+              .filter((p) => p.id && p.title);
+
             setPlaylists(pls);
-          } else if (i === 0) {
-            setPlaylists([]);
           }
 
           if (typeof (resp as any)?.total === "number") {

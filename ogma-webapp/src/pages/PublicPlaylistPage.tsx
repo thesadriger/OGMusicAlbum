@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Track } from "@/types/types";
 import { TrackCard } from "@/components/TrackCard";
-import { getPublicPlaylistByHandle, getPublicPlaylistItemsByHandle } from "@/lib/playlists";
-import { removeItemFromPublicPlaylistByHandle } from "@/lib/playlists";
+import EditPlaylistModal from "@/components/EditPlaylistModal";
+import {
+  getPublicPlaylistByHandle,
+  getPublicPlaylistItemsByHandle,
+  removeItemFromPublicPlaylistByHandle,
+} from "@/lib/playlists";
+import { useMe } from "@/hooks/useMe";
+import { goPlaylistHandle } from "@/lib/router";
 
 export default function PublicPlaylistPage({
   handle,
@@ -21,6 +27,17 @@ export default function PublicPlaylistPage({
   const [items, setItems] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
+  const [editTarget, setEditTarget] = useState<any | null>(null);
+  const { me } = useMe();
+  const normalizedRouteHandle = handle.replace(/^@/, "").toLowerCase();
+
+  const canEdit = useMemo(() => {
+    if (!info || !me) return false;
+    const rawOwner = info.user_id ?? info.userId ?? info.ownerId ?? info.owner_id ?? null;
+    const ownerId = rawOwner != null ? Number(rawOwner) : NaN;
+    if (!Number.isFinite(ownerId)) return false;
+    return ownerId === Number(me.telegram_id);
+  }, [info, me]);
 
   useEffect(() => {
     let dead = false;
@@ -52,7 +69,8 @@ export default function PublicPlaylistPage({
   }, [q, items]);
 
   return (
-    <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3 space-y-3">
+    <>
+      <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3 space-y-3">
       <div className="flex items-center justify-between">
         <button onClick={onBack} className="px-3 py-1 rounded-lg text-xs bg-zinc-200 dark:bg-zinc-800 hover:opacity-90">
           ← Назад
@@ -64,7 +82,22 @@ export default function PublicPlaylistPage({
             return c > 0 ? <span className="ml-2 text-sm text-zinc-500">· {c}</span> : null;
           })()}
         </div>
-        <div className="w-16" />
+        <div className="flex items-center justify-end min-w-[4.5rem]">
+          {canEdit && info ? (
+            <button
+              onClick={() =>
+                setEditTarget({
+                  ...info,
+                  id: String(info.id),
+                  handle: info.handle ?? null,
+                })
+              }
+              className="px-3 py-1 rounded-lg text-xs bg-zinc-200 dark:bg-zinc-800 hover:opacity-90"
+            >
+              Редактировать
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="px-1">
@@ -110,6 +143,38 @@ export default function PublicPlaylistPage({
           ))}
         </div>
       )}
-    </section>
+      </section>
+      <EditPlaylistModal
+        open={Boolean(editTarget)}
+        playlist={editTarget}
+        onClose={() => setEditTarget(null)}
+        onUpdated={(updated) => {
+          setEditTarget(null);
+          setInfo((prev: any) => (prev ? { ...prev, ...updated } : updated));
+          if (!updated.is_public || !updated.handle) {
+            setItems([]);
+            onBack();
+            return;
+          }
+
+          const nextHandle = updated.handle.replace(/^@/, "").toLowerCase();
+          if (nextHandle !== normalizedRouteHandle) {
+            goPlaylistHandle(nextHandle);
+            return;
+          }
+
+          (async () => {
+            try {
+              const refreshed = await getPublicPlaylistByHandle(updated.handle || handle);
+              if (refreshed) {
+                setInfo(refreshed);
+                const li = await getPublicPlaylistItemsByHandle(updated.handle || handle, 200, 0);
+                setItems((li?.items as any[]) || []);
+              }
+            } catch { }
+          })();
+        }}
+      />
+    </>
   );
 }

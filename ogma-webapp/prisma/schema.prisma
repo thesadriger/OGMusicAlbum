@@ -72,7 +72,6 @@ model Playlist {
   accessRequests AccessRequest[]
 
   // уникальные ограничения, уже существующие в БД
-  @@unique([ownerId, title], map: "playlists_user_title_unique")
   @@unique([handle], map: "playlists_handle_key")
   @@map("playlists")
 }

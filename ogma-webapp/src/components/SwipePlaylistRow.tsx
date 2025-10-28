@@ -13,6 +13,7 @@ type Props = {
   p: Playlist;
   onOpen?: () => void;          // тап по карточке
   onDelete: () => Promise<void> | void; // подтверждённое удаление
+  onEdit?: (p: Playlist) => void;
 };
 
 const TRIGGER_COMMIT = 84;
@@ -23,7 +24,7 @@ const FULL_PULL_PCT = 0.30;
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 
-export default function SwipePlaylistRow({ p, onOpen, onDelete }: Props) {
+export default function SwipePlaylistRow({ p, onOpen, onDelete, onEdit }: Props) {
   const startX = useRef<number | null>(null);
   const startY = useRef<number | null>(null);
   const cancelledByScroll = useRef(false);
@@ -212,6 +213,17 @@ export default function SwipePlaylistRow({ p, onOpen, onDelete }: Props) {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit?.(p);
+              }}
+              className="text-xs px-2 py-1 rounded-lg bg-zinc-200/70 dark:bg-zinc-800/70 hover:opacity-90"
+            >
+              Редактировать
+            </button>
             {p.is_public && p.handle ? (
               <span className="text-xs px-2 py-1 rounded-lg bg-zinc-200 dark:bg-zinc-800">
                 Открыть

@@ -88,15 +88,19 @@ export function PlayerBar({
     const tick = () => {
       if (!document.hidden && !a.paused && !a.seeking) {
         const t = a.currentTime || 0;
-        if (last > 0) acc += Math.max(0, t - last);
-        last = t;
+          if (last > 0) acc += Math.max(0, t - last);
+          last = t;
 
-        if (acc >= 5) {
-          const delta = Math.min(15, Math.floor(acc));
-          acc = 0;
+          if (acc >= 5) {
+            const delta = Math.min(15, Math.floor(acc));
+            acc = 0;
 
-          const slot = Math.floor(Date.now() / 5000);
-          const body: any = { track_id: now.id, delta_sec: delta, tick_key: `${now.id}:${slot}` };
+            const slot = Math.floor(Date.now() / 5000);
+            const body: any = { track_id: now.id, delta_sec: delta, tick_key: `${now.id}:${slot}` };
+              const playlistCtx = (now as any).playlistContext;
+              if (playlistCtx?.id) {
+                body.playlist_id = playlistCtx.id;
+              }
           if ((now as any).chat && (now as any).msgId) {
             body.chat = String((now as any).chat).replace(/^@/, "");
             body.msg_id = (now as any).msgId;

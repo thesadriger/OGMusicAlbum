@@ -26,6 +26,16 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN") 
 
 HANDLE_RE = re.compile(r"^[a-z0-9_][a-z0-9_-]{2,31}$")
 
+_LISTEN_TOTALS_READY = False
+_LISTEN_TOTALS_DDL = """
+create table if not exists playlist_listening_totals (
+  playlist_id uuid primary key references playlists(id) on delete cascade,
+  seconds     bigint not null default 0 check (seconds >= 0),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists playlist_listening_totals_updated_idx on playlist_listening_totals (updated_at desc);
+"""
+
 
 # -------------------- utils --------------------
 
@@ -145,16 +155,33 @@ class PlaylistUpdate(BaseModel):
         if not data:
             raise ValueError("No changes requested")
 
-        if not was_public:
-            forbidden = set(data) - {"title"}
+        target_public = bool(data["is_public"]) if "is_public" in data else was_public
+
+        if not was_public and not target_public:
+            allowed = {"title"}
+            if "is_public" in data:
+                data["is_public"] = False
+                allowed.add("is_public")
+            forbidden = set(data) - allowed
             if forbidden:
                 raise ValueError("Only title can be updated for private playlists")
-        else:
-            handle = data.get("handle")
-            if handle is not None and not HANDLE_RE.fullmatch(handle):
+            return data
+
+        handle_provided = "handle" in data
+        handle = data.get("handle") if handle_provided else None
+        if handle_provided and handle:
+            if not HANDLE_RE.fullmatch(handle):
                 raise ValueError("Handle must match ^[a-z0-9_]{3,32}$")
-            if data.get("is_public") is False:
-                data["handle"] = None
+        if handle_provided and not target_public and handle:
+            raise ValueError("Handle can be set only for public playlists")
+
+        if "is_public" in data:
+            data["is_public"] = target_public
+
+        if not target_public:
+            data["handle"] = None
+        elif handle_provided and not handle:
+            data["handle"] = None
 
         return data
 
@@ -199,6 +226,14 @@ async def _ensure_default_playlist(con: asyncpg.Connection, user_id: int) -> str
         user_id,
     )
     return row["id"]
+
+
+async def _ensure_playlist_listening_totals(pool: asyncpg.Pool) -> None:
+    global _LISTEN_TOTALS_READY
+    if _LISTEN_TOTALS_READY:
+        return
+    await pool.execute(_LISTEN_TOTALS_DDL)
+    _LISTEN_TOTALS_READY = True
 
 
 async def get_current_user(
@@ -297,13 +332,16 @@ async def list_playlists(
     pool: asyncpg.Pool = Depends(_get_pool),
     user_id: int = Depends(get_current_user),
 ):
+    await _ensure_playlist_listening_totals(pool)
     async with pool.acquire() as con:
         rows = await con.fetch(
             """
             SELECT p.id::text, p.user_id, p.title, p.kind, p.is_public, p.handle,
                    p.created_at, p.updated_at,
-                   (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id=p.id) AS item_count
+                   (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id=p.id) AS item_count,
+                   COALESCE(lst.seconds, 0) AS listen_seconds
             FROM playlists p
+            LEFT JOIN playlist_listening_totals lst ON lst.playlist_id = p.id
             WHERE p.user_id = $1
             ORDER BY p.updated_at DESC, p.created_at DESC
             """,
@@ -362,7 +400,10 @@ async def create_playlist(
                 raise HTTPException(409, "Handle is already taken")
             raise HTTPException(409, "Failed to create playlist")
 
-    return dict(row)
+    payload = dict(row)
+    if "listen_seconds" not in payload:
+        payload["listen_seconds"] = 0
+    return payload
 
 
 async def _perform_playlist_update(
@@ -371,6 +412,7 @@ async def _perform_playlist_update(
     pool: asyncpg.Pool,
     user_id: int,
 ):
+    await _ensure_playlist_listening_totals(pool)
     try:
         pid = uuid.UUID(playlist_id)
     except Exception:
@@ -444,7 +486,14 @@ async def _perform_playlist_update(
                 raise HTTPException(409, "Handle is already taken")
             raise HTTPException(409, "Failed to update playlist")
 
-    return dict(updated)
+        result = dict(updated)
+        agg = await con.fetchval(
+            "SELECT seconds FROM playlist_listening_totals WHERE playlist_id=$1",
+            pid,
+        )
+
+    result["listen_seconds"] = int(agg or 0)
+    return result
 
 
 @router.patch("/playlists/{playlist_id}")
@@ -531,6 +580,7 @@ async def set_playlist_handle(
     pool: asyncpg.Pool = Depends(_get_pool),
     user_id: int = Depends(get_current_user),
 ):
+    await _ensure_playlist_listening_totals(pool)
     try:
         pid = uuid.UUID(playlist_id)
     except Exception:
@@ -566,7 +616,14 @@ async def set_playlist_handle(
             """,
             pid, h,
         )
-    return dict(row)
+        result = dict(row)
+        agg = await con.fetchval(
+            "SELECT seconds FROM playlist_listening_totals WHERE playlist_id=$1",
+            pid,
+        )
+
+    result["listen_seconds"] = int(agg or 0)
+    return result
 
 
 @router.get("/playlists/default")
@@ -851,21 +908,27 @@ async def get_public_playlist_by_handle(
     handle: str,
     pool: asyncpg.Pool = Depends(_get_pool),
 ):
+    await _ensure_playlist_listening_totals(pool)
     h = _clean_handle(handle)
     if not h or not HANDLE_RE.fullmatch(h):
         raise HTTPException(400, "Invalid handle format")
     async with pool.acquire() as con:
         row = await con.fetchrow(
             """
-            SELECT id::text, user_id, title, kind, is_public, handle, created_at, updated_at
-            FROM playlists
-            WHERE is_public = true AND lower(handle)=lower($1)
+            SELECT p.id::text, p.user_id, p.title, p.kind, p.is_public, p.handle,
+                   p.created_at, p.updated_at,
+                   COALESCE(lst.seconds, 0) AS listen_seconds
+            FROM playlists p
+            LEFT JOIN playlist_listening_totals lst ON lst.playlist_id = p.id
+            WHERE p.is_public = true AND lower(p.handle)=lower($1)
             """,
             h,
         )
     if not row:
         raise HTTPException(404, "Playlist not found")
-    return dict(row)
+    result = dict(row)
+    result["listen_seconds"] = int(result.get("listen_seconds") or 0)
+    return result
 
 
 @router.get("/playlists/by-handle/{handle}/items")

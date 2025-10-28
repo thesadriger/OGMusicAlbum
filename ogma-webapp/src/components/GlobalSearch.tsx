@@ -5,6 +5,7 @@ import type { Track } from "@/types/types";
 import SearchResultItem from "@/components/search/SearchResultItem";
 import { TrackCard } from "@/components/TrackCard";
 import { useContentFilter, filterTracksUniqueByTitle } from "@/hooks/useContentFilter";
+import { goPlaylistHandle } from "@/lib/router";
 
 type SearchResp = { hits: Track[]; total?: number };
 type MaybeCatalogResp = { items?: Track[]; total?: number };
@@ -190,9 +191,10 @@ export default function GlobalSearch({
   const s = q.trim();
 
   const openPublicPlaylist = (handle: string) => {
-    // простой роут без зависимости от новых хелперов
-    const h = handle.replace(/^@/, "");
-    window.location.hash = `#/public/@${encodeURIComponent(h)}`;
+    const clean = handle.replace(/^@/, "");
+    if (clean) {
+      goPlaylistHandle(clean);
+    }
   };
 
   return (
@@ -231,21 +233,19 @@ export default function GlobalSearch({
         {loading
           ? "Загружаем…"
           : s
-            ? `Найдено треков: ${contentFilterOn ? tracksShown.length : totalTracks ?? tracks.length}${playlists.length ? ` • Плейлисты: ${playlists.length}` : ""
-            }`
+            ? `Найдено треков: ${contentFilterOn ? tracksShown.length : totalTracks ?? tracks.length} • Плейлисты: ${playlists.length}`
             : null}
       </div>
 
-      {/* Плейлисты — всегда поверх, только с заполненным handle */}
-      {s && playlists.filter((p) => p.handle).length > 0 && (
+      {/* Плейлисты */}
+      {s && (
         <div className="space-y-2">
           <div className="text-xs uppercase tracking-wide text-zinc-500 pl-1">
             Плейлисты
           </div>
-          <div className="space-y-2">
-            {playlists
-              .filter((p) => p.handle)
-              .map((p) => (
+          {playlists.length > 0 ? (
+            <div className="space-y-2">
+              {playlists.map((p) => (
                 <SearchResultItem
                   key={`pl_${p.id}`}
                   kind="playlist"
@@ -253,7 +253,10 @@ export default function GlobalSearch({
                   onOpen={openPublicPlaylist}
                 />
               ))}
-          </div>
+            </div>
+          ) : (
+            <div className="text-sm text-zinc-500 pl-1">Ничего не найдено.</div>
+          )}
         </div>
       )}
 
@@ -263,17 +266,21 @@ export default function GlobalSearch({
           <div className="text-xs uppercase tracking-wide text-zinc-500 pl-1">
             Треки
           </div>
-          <div className="space-y-3">
-            {tracksShown.map((t, i) => (
-              <TrackCard
-                key={t.id}
-                t={t}
-                isActive={nowId === t.id}
-                isPaused={paused}
-                onToggle={() => onToggleTrack(tracksShown, i)}
-              />
-            ))}
-          </div>
+          {tracksShown.length > 0 ? (
+            <div className="space-y-3">
+              {tracksShown.map((t, i) => (
+                <TrackCard
+                  key={t.id}
+                  t={t}
+                  isActive={nowId === t.id}
+                  isPaused={paused}
+                  onToggle={() => onToggleTrack(tracksShown, i)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-zinc-500 pl-1">Ничего не найдено.</div>
+          )}
         </div>
       )}
     </div>

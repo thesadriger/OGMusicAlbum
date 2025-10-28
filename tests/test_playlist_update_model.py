@@ -34,16 +34,23 @@ def test_private_playlist_only_allows_title_update():
     assert updates == {"title": "Rename"}
 
 
-def test_private_playlist_forbids_handle_changes():
+def test_private_playlist_requires_public_before_handle():
     payload = PlaylistUpdate(handle="new")
     with pytest.raises(ValueError):
         payload.prepare_updates(was_public=False)
 
 
-def test_private_playlist_forbids_visibility_changes():
+def test_private_playlist_can_become_public():
     payload = PlaylistUpdate(is_public=True)
-    with pytest.raises(ValueError):
-        payload.prepare_updates(was_public=False)
+    updates = payload.prepare_updates(was_public=False)
+    assert updates == {"is_public": True}
+
+
+def test_private_playlist_becomes_public_with_handle():
+    payload = PlaylistUpdate(is_public=True, handle="My_Handle")
+    updates = payload.prepare_updates(was_public=False)
+    assert updates["is_public"] is True
+    assert updates["handle"] == "my_handle"
 
 
 def test_update_requires_changes():

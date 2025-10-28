@@ -1,3 +1,11 @@
+export type PlaylistContext = {
+  id: string;
+  handle?: string | null;
+  ownerId?: number | null;
+  title?: string | null;
+  isPublic?: boolean | null;
+};
+
 export type Track = {
   id: string;
   msgId: number;
@@ -10,6 +18,7 @@ export type Track = {
   created_at: string;
   reason?: string;
   playbackUrl?: string;
+  playlistContext?: PlaylistContext | null;
 };
 
 export type ApiList<T> = {

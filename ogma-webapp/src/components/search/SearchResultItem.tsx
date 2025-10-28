@@ -82,6 +82,7 @@ export default memo(function SearchResultItem(props: Props) {
   // playlist
   const p = props.data;
   const closed = p.isPrivate === true || p.is_public === false;
+  const openable = !closed && !!p.handle;
 
   return (
     <div
@@ -100,13 +101,17 @@ export default memo(function SearchResultItem(props: Props) {
             <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-md bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200">
               закрыт
             </span>
-          ) : (
+          ) : openable ? (
             <button
               onClick={() => p.handle && props.onOpen(p.handle.replace(/^@/, ""))}
               className="text-xs px-3 py-1 rounded-md bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 hover:opacity-90"
             >
               Открыть
             </button>
+          ) : (
+            <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-md bg-zinc-200 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-300">
+              нет хэндла
+            </span>
           )}
         </div>
       </div>

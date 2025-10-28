@@ -171,9 +171,8 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   // Прогресс трека
   const getAudio = useCallback(() =>
     document.querySelector(`audio[data-track-id="${t.id}"]`) as HTMLAudioElement | null,
-    [t.id]);
+  [t.id]);
   const already = inPlaylist(t.id);
-
   // --- выбор фоновой анимации React Bits (стабильно "случайно" по id трека) ---
   const BackgroundComp = useMemo<ComponentType<any>>(() => {
     // список без затенения верхнего объекта
@@ -777,6 +776,362 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
           }}
         />
       </div>
+    </div>
+  );
+}
+
+type TrackProgressOverlayProps = {
+  trackId: string | number;
+  isActive: boolean;
+  getAudio: () => HTMLAudioElement | null;
+  scrubbing: boolean;
+  scrubPct: number;
+  lastProgressRef: MutableRefObject<number>;
+};
+
+function TrackProgressOverlay({ trackId, isActive, getAudio, scrubbing, scrubPct, lastProgressRef }: TrackProgressOverlayProps) {
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const scrubbingRef = useRef(scrubbing);
+
+  const setWidth = useCallback((pct: number) => {
+    const node = barRef.current;
+    if (!node) return;
+    const clamped = clamp(pct, 0, 1);
+    node.style.width = `${clamped * 100}%`;
+  }, []);
+
+  useEffect(() => {
+    scrubbingRef.current = scrubbing;
+  }, [scrubbing]);
+
+  useEffect(() => {
+    if (scrubbing) {
+      setWidth(scrubPct);
+      return;
+    }
+    setWidth(lastProgressRef.current);
+  }, [scrubbing, scrubPct, lastProgressRef, setWidth]);
+
+  useEffect(() => {
+    let running = false;
+
+    const stop = () => {
+      running = false;
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+
+    if (!isActive) {
+      stop();
+      lastProgressRef.current = 0;
+      if (!scrubbingRef.current) setWidth(0);
+      return () => { stop(); };
+    }
+
+    const audio = getAudio();
+    if (!audio) {
+      lastProgressRef.current = 0;
+      setWidth(0);
+      return () => { stop(); };
+    }
+
+    const updateFromAudio = () => {
+      const dur = audio.duration;
+      if (Number.isFinite(dur) && dur > 0) {
+        const pct = clamp(audio.currentTime / dur, 0, 1);
+        lastProgressRef.current = pct;
+        if (!scrubbingRef.current) setWidth(pct);
+      }
+    };
+
+    const loop = () => {
+      updateFromAudio();
+      if (running) rafRef.current = requestAnimationFrame(loop);
+    };
+
+    const start = () => {
+      if (running) return;
+      running = true;
+      rafRef.current = requestAnimationFrame(loop);
+    };
+
+    const handlePause = () => {
+      updateFromAudio();
+      stop();
+    };
+
+    const handleEnded = () => {
+      stop();
+      lastProgressRef.current = 0;
+      setWidth(0);
+    };
+
+    audio.addEventListener("timeupdate", updateFromAudio);
+    audio.addEventListener("durationchange", updateFromAudio);
+    audio.addEventListener("play", start);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
+
+    updateFromAudio();
+    if (!audio.paused) start();
+
+    return () => {
+      stop();
+      audio.removeEventListener("timeupdate", updateFromAudio);
+      audio.removeEventListener("durationchange", updateFromAudio);
+      audio.removeEventListener("play", start);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [trackId, isActive, getAudio, lastProgressRef, setWidth]);
+
+  return (
+    <div
+      ref={barRef}
+      className="absolute inset-y-0 left-0 pointer-events-none z-[1]"
+      style={{ width: `${lastProgressRef.current * 100}%` }}
+    >
+      <GlassSurface
+        borderRadius={16}
+        backgroundOpacity={0.05}
+        saturation={1}
+        blur={25}
+        noBorder
+        noShadow
+        tone="light"
+        className="w-full h-full"
+      />
+    </div>
+  );
+}
+
+type TrackTimerProps = {
+  trackId: string | number;
+  isActive: boolean;
+  getAudio: () => HTMLAudioElement | null;
+  scrubbing: boolean;
+  scrubPct: number;
+  lastProgressRef: MutableRefObject<number>;
+};
+
+function TrackTimer({ trackId, isActive, getAudio, scrubbing, scrubPct, lastProgressRef }: TrackTimerProps) {
+  const [mm, setMm] = useState(0);
+  const [ss, setSs] = useState(0);
+  const rafRef = useRef<number | null>(null);
+  const durationRef = useRef(0);
+  const lastSecRef = useRef(-1);
+  const scrubbingRef = useRef(scrubbing);
+  const [visible, setVisible] = useState(false);
+
+  const evaluateVisibility = useCallback((audio?: HTMLAudioElement | null) => {
+    if (!isActive) {
+      setVisible(false);
+      return false;
+    }
+
+    const element = audio ?? getAudio();
+    const hasDur = !!element && Number.isFinite(element.duration) && element.duration > 0;
+    const hasProgress = !!element && element.currentTime > 0;
+    const shouldShow = isActive && (hasDur || hasProgress || lastProgressRef.current > 0 || scrubbingRef.current);
+
+    setVisible((prev) => (prev === shouldShow ? prev : shouldShow));
+    return shouldShow;
+  }, [getAudio, isActive, lastProgressRef]);
+
+  useEffect(() => {
+    scrubbingRef.current = scrubbing;
+    evaluateVisibility();
+  }, [scrubbing, evaluateVisibility]);
+
+  useEffect(() => {
+    evaluateVisibility();
+  }, [evaluateVisibility, trackId, isActive]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    let raf: number | null = null;
+    let cleanupAudio: (() => void) | null = null;
+    let cancelled = false;
+
+    const attach = (audio: HTMLAudioElement) => {
+      const handle = () => evaluateVisibility(audio);
+      const events: (keyof HTMLMediaElementEventMap)[] = [
+        "loadedmetadata",
+        "durationchange",
+        "timeupdate",
+        "play",
+        "progress",
+        "ended",
+      ];
+      events.forEach((evt) => audio.addEventListener(evt, handle));
+      handle();
+
+      cleanupAudio = () => {
+        events.forEach((evt) => audio.removeEventListener(evt, handle));
+      };
+    };
+
+    const lookup = () => {
+      if (cancelled) return;
+      const audio = getAudio();
+      if (audio) {
+        attach(audio);
+      } else {
+        raf = requestAnimationFrame(lookup);
+      }
+    };
+
+    lookup();
+
+    return () => {
+      cancelled = true;
+      if (raf != null) cancelAnimationFrame(raf);
+      cleanupAudio?.();
+    };
+  }, [getAudio, isActive, trackId, evaluateVisibility]);
+
+  const applySeconds = useCallback((seconds: number, force = false) => {
+    const clamped = Math.max(0, Math.floor(seconds));
+    if (!force && clamped === lastSecRef.current) return;
+    lastSecRef.current = clamped;
+    const minutes = Math.floor(clamped / 60);
+    const secs = clamped % 60;
+    setMm((prev) => (prev === minutes ? prev : minutes));
+    setSs((prev) => (prev === secs ? prev : secs));
+  }, []);
+
+  useEffect(() => {
+    let running = false;
+
+    const stop = () => {
+      running = false;
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+
+    if (!visible) {
+      stop();
+      return () => { stop(); };
+    }
+
+    const audio = getAudio();
+
+    if (!audio || !isActive) {
+      stop();
+      if (!scrubbingRef.current) {
+        lastSecRef.current = -1;
+        applySeconds(lastProgressRef.current * (durationRef.current || 0), true);
+      }
+      return () => { stop(); };
+    }
+
+    const update = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        durationRef.current = audio.duration;
+      }
+      applySeconds(audio.currentTime);
+      if (running) rafRef.current = requestAnimationFrame(update);
+    };
+
+    const start = () => {
+      if (running) return;
+      running = true;
+      rafRef.current = requestAnimationFrame(update);
+    };
+
+    const handlePause = () => {
+      update();
+      stop();
+    };
+
+    const handleEnded = () => {
+      stop();
+      durationRef.current = Number.isFinite(audio.duration) ? audio.duration : durationRef.current;
+      lastSecRef.current = -1;
+      applySeconds(0, true);
+    };
+
+    const handleDuration = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        durationRef.current = audio.duration;
+      }
+    };
+
+    audio.addEventListener("timeupdate", update);
+    audio.addEventListener("durationchange", handleDuration);
+    audio.addEventListener("play", start);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
+
+    handleDuration();
+    update();
+    if (!audio.paused) start();
+
+    return () => {
+      stop();
+      audio.removeEventListener("timeupdate", update);
+      audio.removeEventListener("durationchange", handleDuration);
+      audio.removeEventListener("play", start);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [trackId, visible, isActive, getAudio, applySeconds, lastProgressRef]);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (scrubbing) {
+      const audio = getAudio();
+      const duration = durationRef.current || audio?.duration || 0;
+      if (duration > 0) {
+        applySeconds(scrubPct * duration, true);
+      } else if (audio) {
+        applySeconds(audio.currentTime, true);
+      } else {
+        applySeconds(lastProgressRef.current * durationRef.current, true);
+      }
+    } else if (!isActive) {
+      lastSecRef.current = -1;
+      applySeconds(0, true);
+    }
+  }, [visible, scrubbing, scrubPct, isActive, getAudio, applySeconds, lastProgressRef]);
+
+  if (!visible) return null;
+
+  return (
+    <div
+      className="absolute top-1.5 bottom-1.5 right-1.5 flex items-center rounded-md px-2 opacity-40"
+    >
+      <Counter
+        value={mm}
+        places={[10, 1]}
+        fontSize={50}
+        padding={0}
+        gap={0}
+        textColor="white"
+        fontWeight={900}
+        gradientHeight={0}
+        digitStyle={{ width: "1ch" }}
+        counterStyle={{ lineHeight: 1 }}
+      />
+      <span className="mx-0.5 tabular-nums">:</span>
+      <Counter
+        value={ss}
+        places={[10, 1]}
+        fontSize={50}
+        padding={0}
+        gap={0}
+        textColor="white"
+        fontWeight={900}
+        gradientHeight={0}
+        digitStyle={{ width: "1ch" }}
+        counterStyle={{ lineHeight: 1 }}
+      />
     </div>
   );
 }

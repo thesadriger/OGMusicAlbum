@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import asyncpg
 
@@ -120,3 +120,51 @@ async def me_listen(payload: ListenIn, request: Request):
     """, uid, track_id)
 
     return {"ok": True, "deduped": deduped, "delta_applied": delta, "totals": dict(row)}
+
+
+@router.get("/me/listen-seconds")
+async def me_listen_seconds(request: Request, period: str = "all"):
+    uid = _maybe_user_id(request)
+    if not uid:
+        raise HTTPException(401, "Unauthorized")
+
+    pool: asyncpg.Pool = request.app.state.pool
+    if not pool:
+        raise HTTPException(503, "DB pool not ready")
+
+    await _ensure_schema(pool)
+
+    period_norm = (period or "all").strip().lower()
+    today = datetime.now(timezone.utc).date()
+    date_from = None
+
+    if period_norm in {"all", "*", "total"}:
+        date_from = None
+    elif period_norm in {"today", "day", "1d"}:
+        date_from = today
+    elif period_norm in {"week", "7d"}:
+        date_from = today - timedelta(days=6)
+    elif period_norm in {"month", "30d"}:
+        date_from = today.replace(day=1)
+    else:
+        raise HTTPException(400, "Unsupported period")
+
+    async with pool.acquire() as con:
+        if date_from is None:
+            total = await con.fetchval(
+                "select coalesce(sum(seconds), 0) from listening_seconds where user_id=$1",
+                uid,
+            )
+        else:
+            total = await con.fetchval(
+                """
+                select coalesce(sum(seconds), 0)
+                  from listening_seconds
+                 where user_id=$1
+                   and day >= $2
+                """,
+                uid,
+                date_from,
+            )
+
+    return {"seconds": int(total or 0)}

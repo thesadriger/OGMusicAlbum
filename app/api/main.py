@@ -302,7 +302,12 @@ _allow_origins = [
 ]
 if not _allow_origins:
     # дефолт для локалки (vite): можно расширить при необходимости
-    _allow_origins = ["http://localhost:5190", "http://127.0.0.1:5190"]
+    _allow_origins = [
+        "http://localhost:5190",
+        "http://127.0.0.1:5190",
+        "http://localhost:5194",
+        "http://127.0.0.1:5194",
+    ]
 
 app.add_middleware(
     CORSMiddleware,

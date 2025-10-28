@@ -99,10 +99,7 @@ def add_stream_bytes(chat_id: str, n_bytes: int) -> None:
         try:
             STREAM_BYTES_TOTAL.labels(chat_id=chat_id).inc(n_bytes)
         except Exception:
-            passAPI_ROOT="/home/ogma/ogma/app/api"
-METRICS="$API_ROOT/telemetry/metrics.py"
-
-
+            pass
 
 
 def add_download_bytes(user: str, resource: str, n_bytes: int) -> None:

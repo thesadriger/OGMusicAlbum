@@ -55,6 +55,7 @@ except Exception:
     async def stop_cache_shipper(app):
         pass
 
+app = FastAPI()
 
 PG_DSN = os.environ["PG_DSN"]
 MEILI_HOST = (os.environ.get("MEILI_HOST") or "http://127.0.0.1:7700").rstrip("/")

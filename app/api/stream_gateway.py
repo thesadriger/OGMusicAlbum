@@ -1,3 +1,5 @@
+#/home/ogma/ogma/app/api/stream_gateway.py
+
 from __future__ import annotations
 
 import os
@@ -683,28 +685,59 @@ async def stream_by_msg(
     request: Request,
     chat: str = Query(..., description="username канала, можно с @"),
 ):
-    chat_username = (chat or "").strip().lstrip("@")
+    log.error("### OGMA DEBUG ENTER stream_by_msg chat=%s msg_id=%s", chat, msg_id)
+    # 1. нормализуем имя канала
+    chat_username = (chat or "").strip().lstrip("@").lower()
     if not chat_username:
-        raise HTTPException(400, "Query 'chat' is required (username канала без @)")
+        raise HTTPException(
+            status_code=400,
+            detail="Query 'chat' is required (username канала без @)",
+        )
 
-    # пытаемся зайти в канал (если публичный/я уже внутри — ок)
-    await _ensure_join(chat_username)
+    # 2. пытаемся зайти в канал (если юзер-сессия). Если нельзя зайти -> 404, а не 500
+    try:
+        await _ensure_join(chat_username)
+    except HTTPException as e:
+        # если _ensure_join внутри уже вернуло HTTPException (e.g. сессии нет) — прокинем как есть
+        raise e
+    except Exception as e:
+        # приватный канал / нет доступа и т.п.
+        raise HTTPException(
+            status_code=404,
+            detail=f"Cannot access chat '{chat_username}': {e.__class__.__name__}",
+        )
 
-    # достаём документ
+    # 3. достаём сам документ из телеги
     try:
         doc = await _get_document(chat_username, msg_id)
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        # _get_document уже делает 404/502 → просто пробрасываем
+        raise e
+    except _RPCError as e:
+        # Ошибки Telegram уровня RPC (например CHAT_WRITE_FORBIDDEN, CHANNEL_PRIVATE...)
+        raise HTTPException(
+            status_code=404,
+            detail=f"Telegram RPC access error: {e.__class__.__name__}",
+        )
     except Exception as e:
-        raise HTTPException(502, f"Telegram upstream error: {e}")
+        # Любое иное неожиданное — отдаём 502, чтобы фронт понимал "у телеги чихнуло"
+        raise HTTPException(
+            status_code=502,
+            detail=f"Telegram upstream error: {e.__class__.__name__}",
+        )
 
+    # 4. валидируем размер/миме
     size = int(getattr(doc, "size", 0) or 0)
     if size <= 0:
         mt = getattr(doc, "mime_type", "unknown")
-        raise HTTPException(415, f"Unsupported/unknown Telegram file size (mime={mt})")
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported/unknown Telegram file size (mime={mt})",
+        )
 
     mime = getattr(doc, "mime_type", None) or "application/octet-stream"
 
+    # 5. поддерживаем Range
     r = request.headers.get("range")
     start, end, partial = _parse_range(r, size)
 
@@ -715,17 +748,49 @@ async def stream_by_msg(
                 if chunk:
                     yield chunk
         except FloodWaitError as e:
-            log.warning("TG FloodWait on %s/%s: %s", chat_username, msg_id, getattr(e, "seconds", None))
-            raise HTTPException(status_code=429, detail=f"Telegram rate limit, wait {getattr(e,'seconds',3)}s")
+            log.warning(
+                "TG FloodWait on %s/%s: %s",
+                chat_username,
+                msg_id,
+                getattr(e, "seconds", None),
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=f"Telegram rate limit, wait {getattr(e,'seconds',3)}s",
+            )
         except _RPCError as e:
-            log.error("TG RPCError on %s/%s: %r", chat_username, msg_id, e)
-            raise HTTPException(status_code=502, detail=f"Telegram RPC error: {e.__class__.__name__}")
+            log.error(
+                "TG RPCError on %s/%s: %r",
+                chat_username,
+                msg_id,
+                e,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Telegram RPC error: {e.__class__.__name__}",
+            )
         except (ConnectionError, OSError) as e:
-            log.error("TG network error on %s/%s: %r", chat_username, msg_id, e)
-            raise HTTPException(status_code=502, detail="Telegram network error")
-        except Exception:
-            log.exception("Unexpected error streaming %s/%s", chat_username, msg_id)
-            raise HTTPException(status_code=500, detail="Unexpected error")
+            log.error(
+                "TG network error on %s/%s: %r",
+                chat_username,
+                msg_id,
+                e,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="Telegram network error",
+            )
+        except Exception as e:
+            log.exception(
+                "Unexpected error streaming %s/%s: %r",
+                chat_username,
+                msg_id,
+                e,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="File is no longer available from Telegram",
+            )
 
     headers = {
         "Accept-Ranges": "bytes",
@@ -733,13 +798,30 @@ async def stream_by_msg(
         "Cache-Control": "no-transform",
         "Content-Encoding": "identity",
     }
+
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         headers["Content-Length"] = str(end - start + 1)
-        return StreamingResponse(body(), status_code=206, media_type=mime, headers=headers)
+
+        log.error("### OGMA DEBUG stream_by_msg ACTIVE code is running for chat=%s msg_id=%s", chat_username, msg_id)
+
+        return StreamingResponse(
+            body(),
+            status_code=206,
+            media_type=mime,
+            headers=headers,
+        )
     else:
         headers["Content-Length"] = str(size)
-        return StreamingResponse(body(), status_code=200, media_type=mime, headers=headers)
+
+        log.error("### OGMA DEBUG stream_by_msg ACTIVE code is running for chat=%s msg_id=%s", chat_username, msg_id)
+
+        return StreamingResponse(
+            body(),
+            status_code=200,
+            media_type=mime,
+            headers=headers,
+        )
 
 
 @router.head("/stream/by-msg/{msg_id}")
@@ -748,12 +830,46 @@ async def head_stream_by_msg(
     request: Request,
     chat: str = Query(..., description="username канала, можно с @"),
 ):
-    chat_username = (chat or "").strip().lstrip("@")
+    chat_username = (chat or "").strip().lstrip("@").lower()
+    if not chat_username:
+        raise HTTPException(
+            status_code=400,
+            detail="Query 'chat' is required (username канала без @)",
+        )
+
+    # HEAD тоже лучше проверить доступ к каналу, чтобы фронт мог заранее понять 404
+    try:
+        await _ensure_join(chat_username)
+    except Exception as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Cannot access chat '{chat_username}': {e.__class__.__name__}",
+        )
+
     await _ensure_tg()
-    doc = await _get_document(chat_username, msg_id)
+
+    try:
+        doc = await _get_document(chat_username, msg_id)
+    except HTTPException as e:
+        raise e
+    except _RPCError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Telegram RPC access error: {e.__class__.__name__}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Telegram upstream error: {e.__class__.__name__}",
+        )
+
     size = int(getattr(doc, "size", 0) or 0)
     if size <= 0:
-        raise HTTPException(500, "Unknown file size")
+        raise HTTPException(
+            status_code=500,
+            detail="Unknown file size",
+        )
+
     mime = getattr(doc, "mime_type", None) or "application/octet-stream"
 
     headers = {

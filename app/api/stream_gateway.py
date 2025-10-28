@@ -58,6 +58,7 @@ except Exception:
     TG_FLOODWAITS_TOTAL = TG_RPC_ERRORS_TOTAL = None  # type: ignore
 
 from app.api.telemetry.eventlog import EventLog
+from app.api.auth_shared import resolve_user_id
 
 # Логгер модуля
 log = logging.getLogger("app.tgstream")
@@ -397,33 +398,9 @@ def _filename_from(title: Optional[str], artists: Optional[List[str]], mime: Opt
 
 
 # --- auth helpers ---
-try:
-    from app.api.users import _verify_webapp_init_data  # type: ignore
-except Exception:
-    def _verify_webapp_init_data(_: str):  # fallback
-        return {}
-
-
 def _maybe_user_id(req: Request) -> Optional[int]:
-    # 1) заголовок
-    init_data = req.headers.get("x-telegram-init-data")
-    # 2) либо query-параметр init (для <audio> без заголовков)
-    if not init_data:
-        init_data = req.query_params.get("init")
-    if init_data:
-        try:
-            u = _verify_webapp_init_data(init_data)
-            return int(u["id"])
-        except Exception:
-            return None
-    # dev/debug
-    if os.environ.get("ALLOW_DEBUG_HEADERS", "0").lower() in {"1", "true", "yes"}:
-        x = req.headers.get("x-debug-user-id")
-        try:
-            return int(x) if x else None
-        except Exception:
-            return None
-    return None
+    """Compat shim: legacy callers expect this name, internally we reuse resolve_user_id."""
+    return resolve_user_id(req)
 
 
 async def _log_play(pool: asyncpg.Pool, user_id: int, track_id: str):

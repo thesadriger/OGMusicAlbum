@@ -9,7 +9,7 @@ import asyncpg
 import uuid
 
 # Берём готовые хелперы авторизации и резолва юзера
-from app.api.stream_gateway import _maybe_user_id
+from app.api.auth_shared import resolve_user_id
 
 router = APIRouter()
 
@@ -157,7 +157,8 @@ async def _owner_total_seconds(con: asyncpg.Connection, owner_id: int) -> int:
 
 @router.post("/me/listen")
 async def me_listen(payload: ListenIn, request: Request):
-    uid = _maybe_user_id(request)
+    # Определяем пользователя через общий резолвер (поддержка initData, JWT, debug-заголовков)
+    uid = resolve_user_id(request)
     if not uid:
         raise HTTPException(401, "Unauthorized")
 
@@ -301,7 +302,8 @@ async def me_listen_seconds(
     period: str = "all",
     scope: str = "playlists",
 ):
-    uid = _maybe_user_id(request)
+    # Повторно используем тот же резолвер, чтобы оба эндпоинта имели идентичную авторизацию
+    uid = resolve_user_id(request)
     if not uid:
         raise HTTPException(401, "Unauthorized")
 

@@ -1,4 +1,4 @@
-import { streamUrlFor, API_BASE, getInitData } from "@/lib/api";
+import { streamUrlFor, apiPost } from "@/lib/api";
 import { useEffect, useRef, useState } from "react";
 import type { Track } from "@/types/types";
 
@@ -83,8 +83,6 @@ export function PlayerBar({
     let raf = 0;
     let acc = 0;
     let last = 0;
-    const initData = getInitData();
-
     const tick = () => {
       if (!document.hidden && !a.paused && !a.seeking) {
         const t = a.currentTime || 0;
@@ -109,14 +107,8 @@ export function PlayerBar({
             body.msg_id = (now as any).msgId;
           }
 
-          fetch(`${API_BASE}/me/listen`, {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "X-Telegram-Init-Data": initData,
-            },
-            body: JSON.stringify(body),
-          }).catch(() => {});
+          // Используем общий apiPost, чтобы автоматически цеплялись debug-заголовки/куки
+          void apiPost("/me/listen", body, { timeoutMs: 10000 }).catch(() => {});
         }
       } else {
         last = 0;

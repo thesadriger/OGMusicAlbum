@@ -11,6 +11,7 @@ export type Playlist = {
   created_at: string;
   updated_at: string;
   item_count?: number;
+  listen_seconds?: number;
 };
 
 const parse = async (r: Response) => {

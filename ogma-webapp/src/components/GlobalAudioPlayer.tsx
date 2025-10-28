@@ -3,7 +3,7 @@ import React from "react";
 import type { Track } from "@/types/types";
 import ElasticSlider from "@/components/ElasticSlider";
 import { streamUrlFor } from "@/lib/api";
-import { goArtist, goPlaylist } from "@/lib/router";
+import { goArtist, goPlaylist, goPlaylistHandle } from "@/lib/router";
 import GlassSurface from "@/components/GlassSurface";
 import { inPlaylist } from "@/lib/playlists";
 
@@ -373,9 +373,8 @@ export default function GlobalAudioPlayer({
     if (lastAdded?.type === "server") {
       const clean = (lastAdded.handle || "").replace(/^@/, "");
       if (clean) {
-        // Маршрут под PublicPlaylistPage: #/public/<handle>
         try {
-          window.location.hash = `/public/${clean}`;
+          goPlaylistHandle(clean);
           return;
         } catch {
           // если что-то не так — в локальный, чтобы не ломать UX

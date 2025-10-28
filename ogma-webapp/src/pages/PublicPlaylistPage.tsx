@@ -10,6 +10,20 @@ import {
 import { useMe } from "@/hooks/useMe";
 import { goPlaylistHandle } from "@/lib/router";
 
+const GearIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 1024 1024" aria-hidden="true" fill="currentColor">
+    <path d="M600.704 64a32 32 0 0130.464 22.208l35.2 109.376c14.784 7.232 28.928 15.36 42.432 24.512l112.384-24.192a32 32 0 0134.432 15.36L944.32 364.8a32 32 0 01-4.032 37.504l-77.12 85.12a357.12 357.12 0 010 49.024l77.12 85.248a32 32 0 014.032 37.504l-88.704 153.6a32 32 0 01-34.432 15.296L708.8 803.904c-13.44 9.088-27.648 17.28-42.368 24.512l-35.264 109.376A32 32 0 01600.704 960H423.296a32 32 0 01-30.464-22.208L357.696 828.48a351.616 351.616 0 01-42.56-24.64l-112.32 24.256a32 32 0 01-34.432-15.36L79.68 659.2a32 32 0 014.032-37.504l77.12-85.248a357.12 357.12 0 010-48.896l-77.12-85.248A32 32 0 0179.68 364.8l88.704-153.6a32 32 0 0134.432-15.296l112.32 24.256c13.568-9.152 27.776-17.408 42.56-24.64l35.2-109.312A32 32 0 01423.232 64H600.64zm-23.424 64H446.72l-36.352 113.088-24.512 11.968a294.113 294.113 0 00-34.816 20.096l-22.656 15.36-116.224-25.088-65.28 113.152 79.68 88.192-1.92 27.136a293.12 293.12 0 000 40.192l1.92 27.136-79.808 88.192 65.344 113.152 116.224-25.024 22.656 15.296a294.113 294.113 0 0034.816 20.096l24.512 11.968L446.72 896h130.688l36.48-113.152 24.448-11.904a288.282 288.282 0 0034.752-20.096l22.592-15.296 116.288 25.024 65.28-113.152-79.744-88.192 1.92-27.136a293.12 293.12 0 000-40.256l-1.92-27.136 79.808-88.128-65.344-113.152-116.288 24.96-22.592-15.232a287.616 287.616 0 00-34.752-20.096l-24.448-11.904L577.344 128zM512 320a192 192 0 110 384 192 192 0 010-384zm0 64a128 128 0 100 256 128 128 0 000-256z" />
+  </svg>
+);
+
+const formatSeconds = (total: number): string => {
+  const safe = Math.max(0, Math.floor(Number.isFinite(total) ? total : 0));
+  const hours = Math.floor(safe / 3600).toString().padStart(2, "0");
+  const minutes = Math.floor((safe % 3600) / 60).toString().padStart(2, "0");
+  const seconds = (safe % 60).toString().padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+};
+
 export default function PublicPlaylistPage({
   handle,
   onBack,
@@ -31,6 +45,11 @@ export default function PublicPlaylistPage({
   const { me } = useMe();
   const normalizedRouteHandle = handle.replace(/^@/, "").toLowerCase();
 
+  const listenSeconds = useMemo(
+    () => Number(info?.listen_seconds ?? info?.listenSeconds ?? 0),
+    [info]
+  );
+
   const canEdit = useMemo(() => {
     if (!info || !me) return false;
     const rawOwner = info.user_id ?? info.userId ?? info.ownerId ?? info.owner_id ?? null;
@@ -38,6 +57,25 @@ export default function PublicPlaylistPage({
     if (!Number.isFinite(ownerId)) return false;
     return ownerId === Number(me.telegram_id);
   }, [info, me]);
+
+  const playlistContext = useMemo(() => {
+    if (!info) return null;
+    const rawId = info.id ?? (info as any).playlist_id ?? (info as any).playlistId;
+    if (!rawId) return null;
+    const ownerRaw = info.user_id ?? info.userId ?? info.owner_id ?? info.ownerId;
+    let ownerId: number | null = null;
+    if (ownerRaw != null) {
+      const num = Number(ownerRaw);
+      ownerId = Number.isFinite(num) ? num : null;
+    }
+    return {
+      id: String(rawId),
+      handle: info.handle ?? null,
+      ownerId,
+      title: info.title ?? null,
+      isPublic: info.is_public ?? info.isPublic ?? null,
+    };
+  }, [info]);
 
   useEffect(() => {
     let dead = false;
@@ -68,6 +106,11 @@ export default function PublicPlaylistPage({
     });
   }, [q, items]);
 
+  const playbackList = useMemo(() => {
+    if (!playlistContext) return filtered;
+    return filtered.map((t) => ({ ...t, playlistContext }));
+  }, [filtered, playlistContext]);
+
   return (
     <>
       <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3 space-y-3">
@@ -85,6 +128,7 @@ export default function PublicPlaylistPage({
         <div className="flex items-center justify-end min-w-[4.5rem]">
           {canEdit && info ? (
             <button
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={() =>
                 setEditTarget({
                   ...info,
@@ -92,9 +136,11 @@ export default function PublicPlaylistPage({
                   handle: info.handle ?? null,
                 })
               }
-              className="px-3 py-1 rounded-lg text-xs bg-zinc-200 dark:bg-zinc-800 hover:opacity-90"
+              aria-label="Настройки плейлиста"
+              title="Настройки плейлиста"
+              className="p-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:opacity-90"
             >
-              Редактировать
+              <GearIcon />
             </button>
           ) : null}
         </div>
@@ -133,7 +179,7 @@ export default function PublicPlaylistPage({
               t={t}
               isActive={nowId === t.id}
               isPaused={paused}
-              onToggle={() => onToggleTrack(filtered, i)}
+              onToggle={() => onToggleTrack(playbackList, i)}
               mode="playlist"
               onRemoveFromPublic={async (track) => {
                 await removeItemFromPublicPlaylistByHandle(handle, track);
@@ -143,6 +189,10 @@ export default function PublicPlaylistPage({
           ))}
         </div>
       )}
+
+      <div className="pt-3 text-xs text-zinc-500 border-t border-zinc-200/60 dark:border-zinc-800/60">
+        Прослушано другими: <span className="font-mono text-zinc-700 dark:text-zinc-300">{formatSeconds(listenSeconds)}</span>
+      </div>
       </section>
       <EditPlaylistModal
         open={Boolean(editTarget)}

@@ -6,6 +6,7 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 
 import asyncpg
+import uuid
 
 # Берём готовые хелперы авторизации и резолва юзера
 from app.api.stream_gateway import _maybe_user_id
@@ -25,6 +26,11 @@ class ListenIn(BaseModel):
     tick_key: Optional[str] = Field(
         None,
         description="Client idempotency key (e.g., `${trackId}:${Math.floor(Date.now()/5000)}`)"
+    )
+
+    playlist_id: Optional[str] = Field(
+        None,
+        description="UUID of the playlist the track is played from"
     )
 
 async def _ensure_schema(pool: asyncpg.Pool) -> None:
@@ -47,6 +53,15 @@ async def _ensure_schema(pool: asyncpg.Pool) -> None:
       created_at timestamptz not null default now(),
       primary key (user_id, track_id, tick_key)
     );
+
+    create table if not exists playlist_listening_totals(
+      playlist_id uuid primary key references playlists(id) on delete cascade,
+      seconds     bigint not null default 0 check (seconds >= 0),
+      updated_at  timestamptz not null default now()
+    );
+
+    create index if not exists playlist_listening_totals_updated_idx
+      on playlist_listening_totals (updated_at desc);
     """)
 
 async def _resolve_track_id(pool: asyncpg.Pool, payload: ListenIn) -> Optional[str]:
@@ -75,6 +90,36 @@ async def me_listen(payload: ListenIn, request: Request):
     track_id = await _resolve_track_id(pool, payload)
     if not track_id:
         raise HTTPException(404, "Track not found")
+
+    try:
+        track_uuid = uuid.UUID(str(track_id))
+    except Exception:
+        track_uuid = None
+
+    playlist_uuid: Optional[uuid.UUID] = None
+    playlist_owner: Optional[int] = None
+    if payload.playlist_id and track_uuid is not None:
+        try:
+            candidate = uuid.UUID(str(payload.playlist_id))
+        except Exception:
+            candidate = None
+        if candidate is not None:
+            row = await pool.fetchrow(
+                "SELECT id, user_id, is_public FROM playlists WHERE id=$1",
+                candidate,
+            )
+            if row and bool(row["is_public"]):
+                has_track = await pool.fetchval(
+                    "SELECT 1 FROM playlist_items WHERE playlist_id=$1 AND track_id=$2",
+                    candidate,
+                    track_uuid,
+                )
+                if has_track:
+                    playlist_uuid = candidate
+                    try:
+                        playlist_owner = int(row["user_id"])
+                    except Exception:
+                        playlist_owner = None
 
     # безопасно зажмём дельту (на всякий)
     try:
@@ -107,6 +152,24 @@ async def me_listen(payload: ListenIn, request: Request):
               seconds   = LEAST(86400, listening_seconds.seconds + EXCLUDED.seconds),
               updated_at = now()
         """, uid, track_id, today, delta)
+
+        if (
+            playlist_uuid is not None
+            and playlist_owner is not None
+            and int(uid) != int(playlist_owner)
+        ):
+            await pool.execute(
+                """
+                insert into playlist_listening_totals(playlist_id, seconds)
+                values ($1, $2)
+                on conflict (playlist_id)
+                do update set
+                  seconds   = playlist_listening_totals.seconds + EXCLUDED.seconds,
+                  updated_at = now()
+                """,
+                playlist_uuid,
+                int(delta),
+            )
 
     # быстрый ответ с суммами сегодня/за всё время
     row = await pool.fetchrow("""

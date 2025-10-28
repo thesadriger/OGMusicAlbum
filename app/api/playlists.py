@@ -145,6 +145,9 @@ class PlaylistUpdate(BaseModel):
         if not data:
             raise ValueError("No changes requested")
 
+        if "title" in data and data["title"] is None:
+            raise ValueError("Title must not be null")
+
         if not was_public:
             forbidden = set(data) - {"title"}
             if forbidden:

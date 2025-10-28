@@ -52,6 +52,12 @@ def test_update_requires_changes():
         payload.prepare_updates(was_public=True)
 
 
+def test_null_title_is_rejected():
+    payload = PlaylistUpdate(title=None)
+    with pytest.raises(ValueError):
+        payload.prepare_updates(was_public=True)
+
+
 def test_invalid_handle_is_rejected():
     payload = PlaylistUpdate(handle="bad handle!")
     with pytest.raises(ValueError):

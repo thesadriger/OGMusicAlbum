@@ -12,7 +12,7 @@ import urllib.parse
 from typing import Optional
 
 import asyncpg
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from fastapi import (
     APIRouter, Depends, HTTPException, Query, Body, Header, Request, Cookie, status
 )
@@ -116,6 +116,47 @@ class PlaylistCreate(BaseModel):
 
 class HandleUpdate(BaseModel):
     handle: Optional[str] = None
+
+
+class PlaylistUpdate(BaseModel):
+    title: Optional[str] = None
+    handle: Optional[str] = None
+    is_public: Optional[bool] = None
+
+    @field_validator("title")
+    @classmethod
+    def _validate_title(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Title must not be empty")
+        return cleaned
+
+    @field_validator("handle", mode="before")
+    @classmethod
+    def _validate_handle(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _clean_handle(value)
+
+    def prepare_updates(self, *, was_public: bool) -> Dict[str, Any]:
+        data = self.model_dump(exclude_unset=True)
+        if not data:
+            raise ValueError("No changes requested")
+
+        if not was_public:
+            forbidden = set(data) - {"title"}
+            if forbidden:
+                raise ValueError("Only title can be updated for private playlists")
+        else:
+            handle = data.get("handle")
+            if handle is not None and not HANDLE_RE.fullmatch(handle):
+                raise ValueError("Handle must match ^[a-z0-9_]{3,32}$")
+            if data.get("is_public") is False:
+                data["handle"] = None
+
+        return data
 
 
 class RemoveItemBody(BaseModel):
@@ -313,6 +354,89 @@ async def create_playlist(
             raise HTTPException(409, "Playlist with this title already exists for this user")
 
     return dict(row)
+
+
+@router.patch("/playlists/{playlist_id}")
+async def update_playlist(
+    playlist_id: str,
+    payload: PlaylistUpdate = Body(...),
+    pool: asyncpg.Pool = Depends(_get_pool),
+    user_id: int = Depends(get_current_user),
+):
+    try:
+        pid = uuid.UUID(playlist_id)
+    except Exception:
+        raise HTTPException(400, "Invalid playlist_id")
+
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            "SELECT id::text, user_id, title, kind, is_public, handle FROM playlists WHERE id=$1",
+            pid,
+        )
+        if row is None:
+            raise HTTPException(404, "Playlist not found")
+        if row["user_id"] != user_id:
+            raise HTTPException(403, "Forbidden")
+
+        try:
+            updates = payload.prepare_updates(was_public=bool(row["is_public"]))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+        handle = updates.get("handle") if "handle" in updates else None
+        if handle is not None:
+            exists = await con.fetchval(
+                "SELECT 1 FROM playlists WHERE lower(handle)=lower($1) AND id<>$2",
+                handle,
+                pid,
+            )
+            if exists:
+                raise HTTPException(409, "Handle is already taken")
+
+        set_parts = []
+        values: List[Any] = []
+        idx = 1
+
+        if "title" in updates:
+            set_parts.append(f"title = ${idx}")
+            values.append(updates["title"])
+            idx += 1
+
+        if "handle" in updates:
+            set_parts.append(f"handle = ${idx}")
+            values.append(updates["handle"])
+            idx += 1
+
+        if "is_public" in updates:
+            set_parts.append(f"is_public = ${idx}")
+            values.append(updates["is_public"])
+            idx += 1
+
+        if not set_parts:
+            raise HTTPException(400, "No changes requested")
+
+        set_parts.append("updated_at = now()")
+
+        try:
+            updated = await con.fetchrow(
+                f"""
+                UPDATE playlists
+                   SET {', '.join(set_parts)}
+                 WHERE id = ${idx}
+             RETURNING id::text, user_id, title, kind, is_public, handle, created_at, updated_at
+                """,
+                *values,
+                pid,
+            )
+        except asyncpg.UniqueViolationError as e:
+            cn = getattr(e, "constraint_name", "") or ""
+            detail = getattr(e, "detail", "") or ""
+            text = f"{cn} {detail}".lower()
+            if "handle" in text:
+                raise HTTPException(409, "Handle is already taken")
+            raise HTTPException(409, "Failed to update playlist")
+
+    return dict(updated)
 
 
 @router.patch("/playlists/{playlist_id}/handle", status_code=status.HTTP_200_OK)

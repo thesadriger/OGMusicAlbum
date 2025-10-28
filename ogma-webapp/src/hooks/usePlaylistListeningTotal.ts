@@ -1,0 +1,46 @@
+import { useEffect, useMemo, useState } from "react";
+import { apiGet } from "@/lib/api";
+
+export type PlaylistListeningTotal = {
+  seconds: number;
+};
+
+export function usePlaylistListeningTotal() {
+  const [seconds, setSeconds] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setLoading(true);
+      try {
+        const response = await apiGet<PlaylistListeningTotal>("/me/listen-seconds?scope=playlists", {
+          timeoutMs: 15000,
+        });
+        if (cancelled) return;
+        const value = typeof response?.seconds === "number" ? Math.max(0, response.seconds) : 0;
+        setSeconds(value);
+        setError(null);
+      } catch (err: any) {
+        if (cancelled) return;
+        setSeconds(null);
+        setError(err instanceof Error ? err : new Error("Failed to load playlist listening totals"));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return {
+    seconds,
+    loading,
+    error,
+    hasValue: useMemo(() => typeof seconds === "number" && seconds >= 0, [seconds]),
+  } as const;
+}

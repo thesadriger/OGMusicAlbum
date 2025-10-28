@@ -3,7 +3,6 @@ import * as React from "react";
 import PlaylistPage from "@/pages/PlaylistPage";
 import type { Track } from "@/types/types";
 import { goHome, goPlaylistHandle } from "@/lib/router";
-import { apiGet } from "@/lib/api";
 import CreatePlaylistModal from "@/components/CreatePlaylistModal";
 import EditPlaylistModal from "@/components/EditPlaylistModal";
 import { listMyPlaylists, deletePlaylist, getPlaylist } from "@/lib/playlists";
@@ -18,6 +17,8 @@ import SettingsModal from "@/components/SettingsModal";
 // хуки
 import { useMe } from "@/hooks/useMe";
 import { useContentFilter, normalizeTitle } from "@/hooks/useContentFilter";
+import { usePlaylistListeningTotal } from "@/hooks/usePlaylistListeningTotal";
+import { formatSecondsToHMS } from "@/lib/time";
 
 // фоны
 import LiquidChrome from "@/components/backgrounds/LiquidChrome";
@@ -62,133 +63,6 @@ const pickEmojiFromName = (s?: string | null) => {
   const m = [...s.matchAll(/\p{Extended_Pictographic}/gu)];
   return m.length ? m[m.length - 1][0] : "";
 };
-
-const pad2 = (n: number) => String(n).padStart(2, "0");
-const formatHMS = (ms: number) => {
-  const sec = Math.floor(ms / 1000);
-  const hh = Math.floor(sec / 3600);
-  const mm = Math.floor((sec % 3600) / 60);
-  const ss = sec % 60;
-  return `${pad2(hh)}.${pad2(mm)}.${pad2(ss)}`;
-};
-
-const USE_KEY = "ogma_listen_ms";
-function useListeningTimeLocal() {
-  // 1) состояние, которое реально идёт в UI
-  const [msState, setMsState] = React.useState<number>(() => {
-    const raw = localStorage.getItem(USE_KEY);
-    return raw ? Number(raw) || 0 : 0;
-  });
-
-  // 2) ref хранит текущее «истинное» время, тикает каждый кадр,
-  //    но не вызывает ре-рендер
-  const msRef = React.useRef(msState);
-
-  // слушаем изменения из других вкладок
-  React.useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === USE_KEY && e.newValue != null) {
-        const v = Number(e.newValue) || 0;
-        msRef.current = v;
-        setMsState(v);
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  // главный цикл прослушивания
-  React.useEffect(() => {
-    const a = document.querySelector("audio") as HTMLAudioElement | null;
-    if (!a) return;
-
-    let ticking = false;
-    let t0 = performance.now();
-    let raf = 0;
-
-    let lastCommit = performance.now(); // <-- мы НЕ пушим в React каждый кадр
-
-    const step = () => {
-      if (!ticking) return;
-
-      const now = performance.now();
-      const dt = now - t0;
-      t0 = now;
-
-      if (!a.paused) {
-        msRef.current += dt;
-
-        // пишем прогресс в localStorage (дешево)
-        try {
-          localStorage.setItem(USE_KEY, String(msRef.current));
-        } catch { }
-
-        // пушим в React (дорого) только ~раз в секунду
-        if (now - lastCommit > 1000) {
-          lastCommit = now;
-          setMsState(msRef.current);
-        }
-      }
-
-      raf = requestAnimationFrame(step);
-    };
-
-    const onPlay = () => {
-      if (!ticking) {
-        ticking = true;
-        t0 = performance.now();
-        raf = requestAnimationFrame(step);
-      }
-    };
-
-    const onPause = () => {
-      ticking = false;
-      if (raf) cancelAnimationFrame(raf);
-      // один финальный коммит, чтобы не потерять последние миллисекунды
-      setMsState(msRef.current);
-    };
-
-    a.addEventListener("play", onPlay);
-    a.addEventListener("pause", onPause);
-    a.addEventListener("ended", onPause);
-
-    if (!a.paused) onPlay();
-
-    return () => {
-      ticking = false;
-      if (raf) cancelAnimationFrame(raf);
-      a.removeEventListener("play", onPlay);
-      a.removeEventListener("pause", onPause);
-      a.removeEventListener("ended", onPause);
-    };
-  }, []); // <-- пустой массив зависимостей!
-
-  return msState;
-}
-
-function useListeningTimeFromDB() {
-  const [ms, setMs] = React.useState<number | null>(null);
-  React.useEffect(() => {
-    let dead = false;
-    (async () => {
-      try {
-        try {
-          const r = await apiGet<{ seconds: number }>("/me/listen-seconds?period=all", { timeoutMs: 15000 });
-          if (!dead && r && typeof r.seconds === "number") setMs(Math.max(0, r.seconds) * 1000);
-        } catch (e: any) {
-          if (e?.status !== 404) console.error(e);
-          if (!dead) setMs(null);
-        }
-      } catch {
-        if (!dead) setMs(null);
-      }
-    })();
-    return () => {
-      dead = true;
-    };
-  }, []);
-  return ms;
-}
 
 /* ====== Глобальные UI-настройки: загрузка с сервера и применение ====== */
 
@@ -249,8 +123,7 @@ type ProfileProps = { nowId: string | null; paused: boolean; embedded?: boolean 
 export default function ProfilePage({ nowId, paused, embedded = false }: ProfileProps) {
   /* ===== Hooks (всегда в одном порядке, без раннего return до них) ===== */
   const { me, loading, error } = useMe();
-  const localMs = useListeningTimeLocal();
-  const dbMs = useListeningTimeFromDB();
+  const listeningTotals = usePlaylistListeningTotal();
 
   const [localQ, setLocalQ] = React.useState<string>("");
   const [modalOpen, setModalOpen] = React.useState(false);
@@ -437,7 +310,18 @@ export default function ProfilePage({ nowId, paused, embedded = false }: Profile
   // остальные вычисления (без хуков)
   const label = me?.name || me?.username || "Профиль";
   const statusEmoji = pickEmojiFromName(me?.name);
-  const listenMs = (dbMs ?? localMs) || 0;
+  const listenSeconds = listeningTotals.seconds ?? null;
+  const listenSecondsDisplay = React.useMemo(() => {
+    if (listeningTotals.loading) return "…";
+    if (listenSeconds == null) return "—";
+    return formatSecondsToHMS(listenSeconds);
+  }, [listeningTotals.loading, listenSeconds]);
+  const listenSecondsTitle = React.useMemo(() => {
+    if (listenSeconds == null) {
+      return listeningTotals.error ? `Не удалось загрузить: ${listeningTotals.error.message}` : undefined;
+    }
+    return `${listenSeconds} сек.`;
+  }, [listenSeconds, listeningTotals.error]);
 
   const onToggleTrack = (list: Track[], index: number) => {
     (window as any).__ogmaPlayList?.(list, index);
@@ -572,8 +456,8 @@ export default function ProfilePage({ nowId, paused, embedded = false }: Profile
             {label} {statusEmoji && <span className="align-middle">{statusEmoji}</span>}
           </div>
           {!embedded && (
-            <div className="mt-1 text-sm text-zinc-300">
-              Время прослушивания: <span className="font-mono">{formatHMS(listenMs)}</span>
+            <div className="mt-1 text-sm text-zinc-300" title={listenSecondsTitle}>
+              Общее прослушанное время плейлистов: <span className="font-mono">{listenSecondsDisplay}</span>
             </div>
           )}
         </div>

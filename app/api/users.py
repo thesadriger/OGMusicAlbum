@@ -223,22 +223,56 @@ async def _ensure_ui_prefs_table(pool: asyncpg.Pool) -> None:
 async def _ensure_playlists_table(pool: asyncpg.Pool) -> None:
     """
     Таблица плейлистов с глобальными хэндлами.
-    Храним handle как есть, а уникальность обеспечиваем регистронезависимым индексом.
+    Приводим схему к актуальному виду: uuid, user_id, публичность и updated_at.
     """
     ddl = """
+    create extension if not exists pgcrypto;
+
     create table if not exists playlists(
-        id          bigserial primary key,
-        owner_id    bigint not null references users(telegram_id) on delete cascade,
-        handle      text not null,
-        title       text,
+        id         uuid primary key default gen_random_uuid(),
+        user_id    bigint not null references users(telegram_id) on delete cascade,
+        title      text,
         description text,
-        cover_url   text,
-        created_at  timestamptz default now()
+        cover_url  text,
+        handle     text,
+        is_public  boolean not null default false,
+        kind       text not null default 'custom',
+        created_at timestamptz default now(),
+        updated_at timestamptz default now()
     );
 
-    -- регистронезависимая уникальность хэндла
-    create unique index if not exists playlists_handle_ci on playlists (lower(handle));
-    create index if not exists playlists_owner_idx on playlists (owner_id);
+    alter table playlists alter column id set default gen_random_uuid();
+    alter table playlists alter column handle drop not null;
+
+    alter table playlists add column if not exists user_id bigint not null references users(telegram_id) on delete cascade;
+    alter table playlists add column if not exists title text;
+    alter table playlists add column if not exists description text;
+    alter table playlists add column if not exists cover_url text;
+    alter table playlists add column if not exists handle text;
+    alter table playlists add column if not exists is_public boolean not null default false;
+    alter table playlists add column if not exists kind text not null default 'custom';
+    alter table playlists add column if not exists updated_at timestamptz default now();
+
+    do $$
+    begin
+        if exists (
+            select 1 from information_schema.columns
+            where table_name = 'playlists' and column_name = 'owner_id'
+        ) and not exists (
+            select 1 from information_schema.columns
+            where table_name = 'playlists' and column_name = 'user_id'
+        ) then
+            alter table playlists rename column owner_id to user_id;
+        end if;
+    end $$;
+
+    alter table playlists alter column user_id set not null;
+
+    create unique index if not exists playlists_handle_ci
+        on playlists (lower(handle))
+        where handle is not null;
+    create index if not exists playlists_user_idx on playlists (user_id);
+    create index if not exists playlists_public_updated_idx on playlists (is_public, updated_at desc);
     """
     try:
         async with pool.acquire() as con:
@@ -970,20 +1004,33 @@ async def get_playlist_by_handle(
 
     row = await pool.fetchrow(
         """
-        select p.id::text, p.owner_id, p.handle, p.title, p.description, p.cover_url, p.created_at
+        select p.id::text,
+               p.user_id,
+               p.handle,
+               p.title,
+               p.description,
+               p.cover_url,
+               p.created_at,
+               p.updated_at,
+               p.is_public
         from playlists p
-        where lower(p.handle) = lower($1)
+        where p.is_public = true
+          and lower(p.handle) = lower($1)
         """,
         handle,
     )
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Playlist not found")
 
-    owner_id = int(row["owner_id"])
+    owner_id = int(row["user_id"])
     owner_prefs = await _read_ui_prefs(pool, owner_id)
 
+    payload = dict(row)
+    payload.setdefault("owner_id", owner_id)
+    payload.setdefault("user_id", owner_id)
+
     return {
-        "playlist": dict(row),
+        "playlist": payload,
         "owner": {"telegram_id": owner_id},
         "owner_ui_prefs": owner_prefs,
     }
@@ -992,7 +1039,7 @@ async def get_playlist_by_handle(
 # ----------------------- Универсальный поиск: @username / @handle -----------------------
 
 
-@router.get("/search")
+@router.get("/search/universal")
 async def universal_search(
     q: str = Query(..., min_length=1, description="Строка вида @username или @handle"),
     limit: int = Query(
@@ -1001,8 +1048,8 @@ async def universal_search(
     _viewer_id: int = Depends(_current_user_id),  # требуем авторизацию
     pool: asyncpg.Pool = Depends(_get_pool),
 ):
-    """
-    Универсальный поиск по строке q:
+"""
+    Универсальный поиск по строке q (эндпоинт /api/search/universal):
       - если начинается с '@' — это ок, снимем префикс и нормализуем;
       - ищем точное совпадение user.username и playlist.handle (lower(...) = lower($1));
       - если точных совпадений нет/мало — даём короткие списки по префиксу (autocomplete).
@@ -1044,15 +1091,29 @@ async def universal_search(
 
     playlist_exact = await pool.fetchrow(
         """
-        select id::text, owner_id, handle, title, description, cover_url, created_at
-        from playlists
-        where lower(handle) = lower($1)
+        select p.id::text          as id,
+               p.user_id          as user_id,
+               p.handle           as handle,
+               p.title            as title,
+               p.description      as description,
+               p.cover_url        as cover_url,
+               p.created_at       as created_at,
+               p.updated_at       as updated_at,
+               p.is_public        as is_public,
+               u.username         as owner_username,
+               u.name             as owner_name
+        from playlists p
+        left join users u on u.telegram_id = p.user_id
+        where p.is_public = true
+          and p.handle is not null
+          and lower(p.handle) = lower($1)
         """,
         term,
     )
 
-    # --- префиксные подсказки (autocomplete), не включаем точное совпадение второй раз
     like_pat = term + "%"
+    title_pat = "%" + term + "%"
+
     users_like = await pool.fetch(
         """
         select telegram_id, username, name, photo_url, created_at
@@ -1066,54 +1127,137 @@ async def universal_search(
         limit,
     )
 
-    playlists_like = await pool.fetch(
+    playlists_handle = await pool.fetch(
         """
-        select id::text, owner_id, handle, title, description, cover_url, created_at
-        from playlists
-        where lower(handle) like lower($1)
-        order by lower(handle) asc
+        select p.id::text    as id,
+               p.user_id     as user_id,
+               p.handle      as handle,
+               p.title       as title,
+               p.description as description,
+               p.cover_url   as cover_url,
+               p.created_at  as created_at,
+               p.updated_at  as updated_at,
+               p.is_public   as is_public,
+               u.username    as owner_username,
+               u.name        as owner_name
+        from playlists p
+        left join users u on u.telegram_id = p.user_id
+        where p.is_public = true
+          and p.handle is not null
+          and lower(p.handle) like lower($1)
+        order by lower(p.handle) asc, p.updated_at desc
         limit $2
         """,
         like_pat,
-        limit,
+        limit * 2,
     )
 
-    # Удалим из подсказок точные попадания, если они есть
-    def _rows_to_list(rows):
-        return [dict(r) for r in rows] if rows else []
+    playlists_title = await pool.fetch(
+        """
+        select p.id::text    as id,
+               p.user_id     as user_id,
+               p.handle      as handle,
+               p.title       as title,
+               p.description as description,
+               p.cover_url   as cover_url,
+               p.created_at  as created_at,
+               p.updated_at  as updated_at,
+               p.is_public   as is_public,
+               u.username    as owner_username,
+               u.name        as owner_name
+        from playlists p
+        left join users u on u.telegram_id = p.user_id
+        where p.is_public = true
+          and coalesce(p.title, '') <> ''
+          and lower(p.title) like lower($1)
+        order by strpos(lower(p.title), lower($1)) asc, p.updated_at desc
+        limit $2
+        """,
+        title_pat,
+        limit * 2,
+    )
 
-    users_out = _rows_to_list(users_like)
+    playlists_owner = await pool.fetch(
+        """
+        select p.id::text    as id,
+               p.user_id     as user_id,
+               p.handle      as handle,
+               p.title       as title,
+               p.description as description,
+               p.cover_url   as cover_url,
+               p.created_at  as created_at,
+               p.updated_at  as updated_at,
+               p.is_public   as is_public,
+               u.username    as owner_username,
+               u.name        as owner_name
+        from playlists p
+        left join users u on u.telegram_id = p.user_id
+        where p.is_public = true
+          and u.username is not null
+          and lower(u.username) like lower($1)
+        order by lower(u.username) asc, p.updated_at desc
+        limit $2
+        """,
+        like_pat,
+        limit * 2,
+    )
+
+    def _row_to_dict(row: Optional[asyncpg.Record]) -> Dict[str, Any]:
+        if not row:
+            return {}
+        data = dict(row)
+        if "user_id" in data:
+            data.setdefault("owner_id", data["user_id"])
+        return data
+
+    users_out = [_row_to_dict(r) for r in users_like]
     if user_exact:
-        users_out = [dict(user_exact)] + [
+        user_dict = _row_to_dict(user_exact)
+        users_out = [user_dict] + [
             u
             for u in users_out
             if not u.get("username")
-            or u["username"].lower() != str(user_exact["username"]).lower()
+            or u["username"].lower() != str(user_dict.get("username", "")).lower()
         ]
 
-    playlists_out = _rows_to_list(playlists_like)
+    playlists_acc: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+
+    def _push(rows: List[asyncpg.Record]) -> None:
+        for r in rows:
+            data = _row_to_dict(r)
+            pid = str(data.get("id") or "")
+            if not pid or pid in seen_ids:
+                continue
+            if data.get("is_public") is not True:
+                continue
+            seen_ids.add(pid)
+            playlists_acc.append(data)
+            if len(playlists_acc) >= limit:
+                return
+
     if playlist_exact:
-        playlists_out = [dict(playlist_exact)] + [
-            p
-            for p in playlists_out
-            if p.get("handle", "").lower() != str(playlist_exact["handle"]).lower()
-        ]
+        _push([playlist_exact])
+    if len(playlists_acc) < limit:
+        _push(list(playlists_handle))
+    if len(playlists_acc) < limit:
+        _push(list(playlists_title))
+    if len(playlists_acc) < limit:
+        _push(list(playlists_owner))
 
-    # Выберем primary: по UX логике сперва user, потом playlist;
-    # если ничего точного — primary = null
+    # Выберем primary: по UX логике сперва user, потом playlist
     primary = None
     if user_exact and not playlist_exact:
-        primary = {"kind": "user", "data": dict(user_exact)}
+        primary = {"kind": "user", "data": _row_to_dict(user_exact)}
     elif playlist_exact and not user_exact:
-        primary = {"kind": "playlist", "data": dict(playlist_exact)}
+        primary = {"kind": "playlist", "data": _row_to_dict(playlist_exact)}
     elif user_exact and playlist_exact:
-        # в случае двух точных — приоритет username
-        primary = {"kind": "user", "data": dict(user_exact)}
+        primary = {"kind": "user", "data": _row_to_dict(user_exact)}
 
     result_core = {
         "primary": primary,
         "users": users_out[:limit],
-        "playlists": playlists_out[:limit],
+        "playlists": playlists_acc[:limit],
     }
     _search_cache_put(cache_key, result_core)
 

@@ -77,101 +77,201 @@ export default function GlobalSearch({
 
         const PAGE = 50;
         const MAX_PAGES = 20;
+        const UNIVERSAL_LIMIT = 16;
 
-        let offset = 0;
-        const accTracks: Track[] = [];
+        const normalizePlaylist = (p: any): PlaylistLite | null => {
+          if (!p) return null;
+          const id = p.id ?? p.playlist_id ?? p.playlistId ?? p.uuid ?? null;
+          const handle = p.handle ?? p.slug ?? null;
+          const title = p.title ?? p.name ?? "";
+          if (!title) return null;
+          const normalized: PlaylistLite = {
+            id: id != null ? String(id) : "",
+            title,
+            handle: handle ? String(handle).replace(/^@/, "") : null,
+            is_public:
+              p.is_public ??
+              p.isPublic ??
+              p.public ??
+              (p.isPrivate === true ? false : undefined),
+            isPrivate: p.isPrivate ?? (p.is_public === false),
+            coverUrl: p.coverUrl ?? p.cover_url ?? null,
+            tracksCount:
+              p.tracksCount ??
+              p.tracks_count ??
+              p.itemsCount ??
+              p.item_count ??
+              p.count ??
+              null,
+          };
+          return normalized.id || normalized.handle ? normalized : null;
+        };
+
+        let universalPlaylists: PlaylistLite[] | null = null;
+        let fallbackPlaylists: PlaylistLite[] | null = null;
+        let tracksAcc: Track[] = [];
         let totalValue: number | null = null;
 
-        for (let i = 0; i < MAX_PAGES; i++) {
-          const params = new URLSearchParams({
-            q: s,
-            limit: String(PAGE),
-            offset: String(offset),
-          });
-
-          let resp: SearchResp | UniversalSearchResp | MaybeCatalogResp;
-
+        const fetchUniversal = async () => {
           try {
-            resp = await apiGet(`/search?${params.toString()}`, {
-              timeoutMs: 20000,
+            const params = new URLSearchParams({
+              q: s,
+              limit: String(UNIVERSAL_LIMIT),
             });
-          } catch (e) {
-            if (e instanceof ApiError && [404, 405, 410].includes(e.status)) {
-              resp = await apiGet(`/catalog/search?${params.toString()}`, {
-                timeoutMs: 20000,
+            const data: any = await apiGet<any>(`/search/universal?${params.toString()}`, {
+              timeoutMs: 15000,
+            });
+            if (cancelled) return;
+
+            const rawSection: any = data?.playlists ?? [];
+            const rawList: any[] = Array.isArray(rawSection)
+              ? rawSection
+              : Array.isArray(rawSection?.items)
+                ? rawSection.items
+                : Array.isArray(rawSection?.hits)
+                  ? rawSection.hits
+                  : [];
+
+            const collected: PlaylistLite[] = [];
+            const push = (candidate: any) => {
+              const pl = normalizePlaylist(candidate);
+              if (pl) collected.push(pl);
+            };
+
+            if (data?.primary?.kind === "playlist") {
+              push(data.primary.data);
+            }
+            rawList.forEach(push);
+
+            const dedup: PlaylistLite[] = [];
+            const seen = new Set<string>();
+            for (const item of collected) {
+              const key = `${item.id}::${item.handle ?? ""}`.toLowerCase();
+              if (seen.has(key)) continue;
+              seen.add(key);
+              dedup.push(item);
+              if (dedup.length >= UNIVERSAL_LIMIT) break;
+            }
+            universalPlaylists = dedup;
+          } catch (err) {
+            if (err instanceof ApiError && [404, 405, 410].includes(err.status)) {
+              universalPlaylists = null;
+              return;
+            }
+            console.warn("[search] universal search failed", err);
+            universalPlaylists = null;
+          }
+        };
+
+        const fetchTracks = async () => {
+          try {
+            let offset = 0;
+            const acc: Track[] = [];
+            let total: number | null = null;
+            let fallback: PlaylistLite[] | null = null;
+
+            for (let i = 0; i < MAX_PAGES; i++) {
+              const params = new URLSearchParams({
+                q: s,
+                limit: String(PAGE),
+                offset: String(offset),
               });
-            } else {
-              throw e;
+
+              let resp: SearchResp | UniversalSearchResp | MaybeCatalogResp;
+
+              try {
+                resp = await apiGet(`/search?${params.toString()}`, {
+                  timeoutMs: 20000,
+                });
+              } catch (e) {
+                if (e instanceof ApiError && [404, 405, 410].includes(e.status)) {
+                  resp = await apiGet(`/catalog/search?${params.toString()}`, {
+                    timeoutMs: 20000,
+                  });
+                } else {
+                  throw e;
+                }
+              }
+
+              if (cancelled) return;
+
+              const pageHits: Track[] = Array.isArray((resp as SearchResp)?.hits)
+                ? (resp as SearchResp).hits
+                : Array.isArray((resp as UniversalSearchResp)?.tracks)
+                  ? (resp as UniversalSearchResp).tracks!
+                  : Array.isArray((resp as MaybeCatalogResp)?.items)
+                    ? (resp as MaybeCatalogResp).items!
+                    : [];
+
+              acc.push(...pageHits);
+
+              if (i === 0) {
+                const section: any =
+                  (resp as UniversalSearchResp)?.playlists ?? (resp as any)?.playlists;
+                const rawList: any[] = Array.isArray(section)
+                  ? section
+                  : Array.isArray(section?.hits)
+                    ? section.hits
+                    : Array.isArray(section?.items)
+                      ? section.items
+                      : [];
+                const mapped = rawList
+                  .map(normalizePlaylist)
+                  .filter(Boolean) as PlaylistLite[];
+                fallback = mapped;
+              }
+
+              if (typeof (resp as any)?.total === "number") {
+                total = (resp as any).total;
+              } else if (typeof (resp as any)?.estimatedTotalHits === "number") {
+                total = (resp as any).estimatedTotalHits;
+              }
+
+              offset += PAGE;
+
+              if (pageHits.length < PAGE) break;
+              if (total != null && acc.length >= total) break;
             }
+
+            tracksAcc = acc;
+            totalValue = total ?? acc.length;
+            fallbackPlaylists = fallback;
+          } catch (err) {
+            console.warn("[search] track search failed", err);
+            tracksAcc = [];
+            totalValue = 0;
+            fallbackPlaylists = null;
           }
+        };
 
-          if (cancelled) return;
+        await Promise.allSettled([fetchUniversal(), fetchTracks()]);
 
-          // Треки
-          const pageHits: Track[] = Array.isArray((resp as SearchResp)?.hits)
-            ? (resp as SearchResp).hits
-            : Array.isArray((resp as UniversalSearchResp)?.tracks)
-              ? (resp as UniversalSearchResp).tracks!
-              : Array.isArray((resp as MaybeCatalogResp)?.items)
-                ? (resp as MaybeCatalogResp).items!
-                : [];
+        if (cancelled) return;
 
-          accTracks.push(...pageHits);
+        setTracks(tracksAcc);
+        setTotalTracks(totalValue ?? tracksAcc.length);
 
-          // Плейлисты — собираем из секции playlists (hits/массив)
-          if (i === 0) {
-            const section: any = (resp as UniversalSearchResp)?.playlists ?? (resp as any)?.playlists;
-            let raw: any[] = [];
-            if (Array.isArray(section)) {
-              raw = section;
-            } else if (section && Array.isArray(section.hits)) {
-              raw = section.hits;
-            }
-
-            const pls = raw
-              .filter(Boolean)
-              .map((p) => {
-                const id = p.id ?? p.playlist_id ?? p.playlistId ?? p.uuid ?? null;
-                const handle = p.handle ?? p.slug ?? null;
-                return {
-                  id: id != null ? String(id) : "",
-                  title: p.title || p.name || "",
-                  handle: handle ? String(handle).replace(/^@/, "") : null,
-                  is_public: p.is_public ?? p.isPublic ?? p.public ?? (p.isPrivate === true ? false : undefined),
-                  isPrivate: p.isPrivate ?? (p.is_public === false),
-                  coverUrl: p.coverUrl ?? p.cover_url ?? null,
-                  tracksCount:
-                    p.tracksCount ??
-                    p.tracks_count ??
-                    p.itemsCount ??
-                    p.item_count ??
-                    p.count ??
-                    null,
-                } as PlaylistLite;
-              })
-              .filter((p) => p.id && p.title);
-
-            setPlaylists(pls);
+        const finalPlaylists: PlaylistLite[] = [];
+        const seen = new Set<string>();
+        const pushList = (list?: PlaylistLite[] | null) => {
+          if (!Array.isArray(list)) return;
+          for (const pl of list) {
+            if (!pl) continue;
+            const key = `${pl.id}::${pl.handle ?? ""}`.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            finalPlaylists.push(pl);
           }
+        };
 
-          if (typeof (resp as any)?.total === "number") {
-            totalValue = (resp as any).total;
-          }
+        pushList(universalPlaylists);
+        pushList(fallbackPlaylists);
 
-          offset += PAGE;
-
-          const got = pageHits.length;
-          if (got < PAGE) break;
-          if (totalValue != null && accTracks.length >= totalValue) break;
-        }
-
-        if (!cancelled) {
-          setTracks(accTracks);
-          setTotalTracks(totalValue ?? accTracks.length);
-        }
+        setPlaylists(finalPlaylists);
       })()
-        .catch(() => {
+        .catch((err) => {
           if (!cancelled) {
+            console.warn("[search] query failed", err);
             setTracks([]);
             setTotalTracks(0);
             setPlaylists([]);

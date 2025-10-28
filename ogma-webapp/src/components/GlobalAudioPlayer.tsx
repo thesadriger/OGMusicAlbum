@@ -309,6 +309,18 @@ export default function GlobalAudioPlayer({
 
   const BOTTOM_GAP = 14;
 
+  const trackMsgId =
+    (now as any)?.msgId ?? (now as any)?.msg_id ?? null;
+  const trackChatRaw =
+    (now as any)?.chat ??
+    (now as any)?.chat_username ??
+    (now as any)?.chatUsername ??
+    null;
+  const normalizedTrackChat =
+    trackChatRaw != null
+      ? String(trackChatRaw).replace(/^@/, "").toLowerCase()
+      : null;
+
   /** Слушаем «добавлено в плейлист» и учитываем ТОЛЬКО для текущего трека */
   React.useEffect(() => {
     const onAdded = (e: Event) => {
@@ -357,6 +369,91 @@ export default function GlobalAudioPlayer({
     window.addEventListener("ogma:playlist-change" as any, onChange);
     return () => window.removeEventListener("ogma:playlist-change" as any, onChange);
   }, [now?.id]);
+
+  React.useEffect(() => {
+    const nowTrack = now;
+    const matchesTrack = (candidate: any) => {
+      if (!nowTrack) return false;
+      const nowId = nowTrack.id;
+      if (candidate?.id && nowId && String(candidate.id) === String(nowId)) {
+        return true;
+      }
+
+      const candMsg = candidate?.msgId ?? candidate?.msg_id ?? null;
+      if (candMsg != null && trackMsgId != null) {
+        const candChatRaw =
+          candidate?.chat ??
+          candidate?.chat_username ??
+          candidate?.chatUsername ??
+          null;
+        const candChat = candChatRaw
+          ? String(candChatRaw).replace(/^@/, "").toLowerCase()
+          : null;
+        if (Number(candMsg) === Number(trackMsgId)) {
+          if (!normalizedTrackChat || !candChat) return true;
+          return candChat === normalizedTrackChat;
+        }
+      }
+
+      return false;
+    };
+
+    const onPublicAdded = (event: Event) => {
+      const detail = (event as CustomEvent<any>)?.detail ?? {};
+      const track = detail.track ?? detail;
+      if (!matchesTrack(track)) return;
+      const playlistIdRaw = detail.playlistId ?? detail.playlist_id ?? null;
+      const handleRaw = detail.handle ?? detail.playlistHandle ?? null;
+      const normalizedHandle = handleRaw
+        ? String(handleRaw).replace(/^@/, "")
+        : null;
+      setAddedByEvent(true);
+      setLastAdded({
+        type: "server",
+        id: playlistIdRaw != null ? String(playlistIdRaw) : undefined,
+        handle: normalizedHandle,
+        title: detail.playlistTitle ?? detail.title ?? null,
+        is_public: true,
+      });
+    };
+
+    const onPublicRemoved = (event: Event) => {
+      const detail = (event as CustomEvent<any>)?.detail ?? {};
+      const track = detail.track ?? detail;
+      if (!matchesTrack(track)) return;
+      const playlistIdRaw = detail.playlistId ?? detail.playlist_id ?? null;
+      const playlistIdStr = playlistIdRaw != null ? String(playlistIdRaw) : null;
+      const handleRaw = detail.handle ?? null;
+      const normalizedHandle = handleRaw
+        ? String(handleRaw).replace(/^@/, "").toLowerCase()
+        : null;
+      let cleared = false;
+      setLastAdded((prev) => {
+        if (!prev || prev.type !== "server") return prev;
+        const prevHandle = prev.handle
+          ? String(prev.handle).replace(/^@/, "").toLowerCase()
+          : null;
+        if (playlistIdStr && prev.id && String(prev.id) !== playlistIdStr) {
+          return prev;
+        }
+        if (!playlistIdStr && normalizedHandle && prevHandle && prevHandle !== normalizedHandle) {
+          return prev;
+        }
+        cleared = true;
+        return null;
+      });
+      if (cleared) {
+        setAddedByEvent(false);
+      }
+    };
+
+    window.addEventListener("ogma:public-playlist-item-added" as any, onPublicAdded);
+    window.addEventListener("ogma:public-playlist-item-removed" as any, onPublicRemoved);
+    return () => {
+      window.removeEventListener("ogma:public-playlist-item-added" as any, onPublicAdded);
+      window.removeEventListener("ogma:public-playlist-item-removed" as any, onPublicRemoved);
+    };
+  }, [now, trackMsgId, normalizedTrackChat]);
 
   /** Итоговый индикатор плашки «Добавлено» */
   const showAdded = (isAddedLocal || addedByEvent) && !!now;

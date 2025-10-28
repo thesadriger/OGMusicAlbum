@@ -593,6 +593,38 @@ export default function App() {
           try {
             await addItemToPlaylist(p.id, trackId);
             setContainsMap((m) => ({ ...m, [p.id]: true }));
+            if (typeof window !== "undefined") {
+              const cleanHandle = (p.handle || "").replace(/^@/, "");
+              const token =
+                typeof (globalThis as any).crypto?.randomUUID === "function"
+                  ? (globalThis as any).crypto.randomUUID()
+                  : `pl-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+              let detailTrack: any = null;
+              const sourceTrack = addTrack;
+              if (sourceTrack) {
+                try {
+                  if (typeof (globalThis as any).structuredClone === "function") {
+                    detailTrack = (globalThis as any).structuredClone(sourceTrack);
+                  } else {
+                    detailTrack = JSON.parse(JSON.stringify(sourceTrack));
+                  }
+                } catch {
+                  detailTrack = { ...sourceTrack };
+                }
+              }
+              if (!detailTrack) detailTrack = { id: trackId };
+              window.dispatchEvent(
+                new CustomEvent("ogma:public-playlist-item-added", {
+                  detail: {
+                    playlistId: String(p.id),
+                    handle: cleanHandle || null,
+                    playlistTitle: p.title ?? null,
+                    track: detailTrack,
+                    token,
+                  },
+                })
+              );
+            }
             // тост — как было
             try {
               window.dispatchEvent(

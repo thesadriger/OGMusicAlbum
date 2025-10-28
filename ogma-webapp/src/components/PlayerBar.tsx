@@ -75,6 +75,8 @@ export function PlayerBar({
     }
   }, [paused, now?.id]);
 
+  const playlistCtxId = (now as any)?.playlistContext?.id;
+
   // пинги прослушивания: ~раз в 5с отправляем delta_sec
   useEffect(() => {
     if (!audioRef.current || !now) return;
@@ -97,10 +99,9 @@ export function PlayerBar({
 
             const slot = Math.floor(Date.now() / 5000);
             const body: any = { track_id: now.id, delta_sec: delta, tick_key: `${now.id}:${slot}` };
-              const playlistCtx = (now as any).playlistContext;
-              if (playlistCtx?.id) {
-                body.playlist_id = playlistCtx.id;
-              }
+            if (playlistCtxId) {
+              body.playlist_id = playlistCtxId;
+            }
           if ((now as any).chat && (now as any).msgId) {
             body.chat = String((now as any).chat).replace(/^@/, "");
             body.msg_id = (now as any).msgId;
@@ -123,7 +124,7 @@ export function PlayerBar({
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [now?.id, now?.msgId, now?.chat]);
+  }, [now?.id, now?.msgId, now?.chat, playlistCtxId]);
 
   return (
     <div className="fixed inset-x-0 bottom-0 border-t bg-white/80 dark:bg-zinc-950/80 backdrop-blur p-3">

@@ -1,3 +1,4 @@
+#home/ogma/ogma/app/api/playlists.py
 from __future__ import annotations
 
 import os
@@ -572,6 +573,23 @@ async def override_update_playlist(
         playlist_id=playlist_id, payload=payload, pool=pool, user_id=user_id
     )
 
+@router.post("/playlists/{playlist_id}/update")
+async def update_playlist_explicit(
+    playlist_id: str,
+    payload: PlaylistUpdate = Body(...),
+    pool: asyncpg.Pool = Depends(_get_pool),
+    user_id: int = Depends(get_current_user),
+):
+    """
+    Простой "обнови плейлист" без PATCH и без override.
+    Фронт будет стучаться сюда обычным POST.
+    """
+    return await _perform_playlist_update(
+        playlist_id=playlist_id,
+        payload=payload,
+        pool=pool,
+        user_id=user_id,
+    )
 
 @router.patch("/playlists/{playlist_id}/handle", status_code=status.HTTP_200_OK)
 async def set_playlist_handle(

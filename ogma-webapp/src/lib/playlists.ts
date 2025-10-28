@@ -60,7 +60,7 @@ async function req<T = any>(url: string, init?: RequestInit): Promise<T> {
 /* ======================= ПУБЛИЧНЫЕ ПЛЕЙЛИСТЫ (как было) ======================= */
 
 export async function listMyPlaylists() {
-  return req<{ items: Playlist[] }>("/api/playlists", {
+  return req<{ items: Playlist[] }>("/playlists", {
     method: "GET",
     headers: authHeaders({
       Accept: "application/json",
@@ -74,7 +74,7 @@ export async function createPlaylist(payload: {
   is_public?: boolean;
   handle?: string | null;
 }) {
-  return req<Playlist>("/api/playlists", {
+  return req<Playlist>("/playlists", {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
@@ -85,124 +85,20 @@ export async function updatePlaylist(
   id: string,
   payload: { title?: string; handle?: string | null; is_public?: boolean }
 ) {
-  const body: Record<string, string | boolean | null> = {};
+  const body: Record<string, any> = {};
   if (payload.title !== undefined) body.title = payload.title;
   if (payload.handle !== undefined) body.handle = payload.handle;
   if (payload.is_public !== undefined) body.is_public = payload.is_public;
 
-  const baseUrl = `/api/playlists/${encodeURIComponent(id)}`;
-  const urlVariants = [baseUrl];
-  if (!baseUrl.endsWith("/")) {
-    urlVariants.push(`${baseUrl}/`);
-  }
-
-  const json = JSON.stringify(body);
-  const jsonHeaders = () => authHeaders({ "Content-Type": "application/json" });
-
-  const attempts: Array<() => Promise<Playlist>> = [];
-  const overrideTokens = ["PATCH", "patch"];
-  const withMethodOverride = (url: string, token: string) =>
-    url.includes("?") ? `${url}&_method=${token}` : `${url}?_method=${token}`;
-  const formBody = (token: string) => {
-    const params = new URLSearchParams();
-    params.set("_method", token);
-    if (payload.title !== undefined) params.set("title", payload.title);
-    if (payload.handle !== undefined) {
-      if (payload.handle === null) {
-        params.set("handle", "");
-        params.set("handle_null", "1");
-      } else {
-        params.set("handle", payload.handle);
-      }
-    }
-    if (payload.is_public !== undefined) {
-      params.set("is_public", payload.is_public ? "true" : "false");
-    }
-    return params.toString();
-  };
-
-  for (const url of urlVariants) {
-    attempts.push(() =>
-      req<Playlist>(url, {
-        method: "PATCH",
-        headers: jsonHeaders(),
-        body: json,
-      })
-    );
-  }
-
-  for (const url of urlVariants) {
-    attempts.push(() =>
-      req<Playlist>(url, {
-        method: "PUT",
-        headers: jsonHeaders(),
-        body: json,
-      })
-    );
-  }
-
-  for (const url of urlVariants) {
-    for (const token of overrideTokens) {
-      attempts.push(() =>
-        req<Playlist>(withMethodOverride(url, token), {
-          method: "POST",
-          headers: jsonHeaders(),
-          body: json,
-        })
-      );
-    }
-    for (const token of overrideTokens) {
-      attempts.push(() =>
-        req<Playlist>(url, {
-          method: "POST",
-          headers: authHeaders({
-            "Content-Type": "application/json",
-            "X-HTTP-Method-Override": token,
-          }),
-          body: json,
-        })
-      );
-      attempts.push(() =>
-        req<Playlist>(url, {
-          method: "POST",
-          headers: authHeaders({
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-          }),
-          body: formBody(token),
-        })
-      );
-    }
-  }
-
-  let lastError: any;
-  for (const call of attempts) {
-    try {
-      return await call();
-    } catch (err: any) {
-      lastError = err;
-      const rawStatus = typeof err?.status === "number" ? err.status : undefined;
-      const status = rawStatus === 0 ? undefined : rawStatus;
-      const messageRaw = String(err?.detail || err?.message || "");
-      const message = messageRaw.toLowerCase();
-      if (status && status !== 404 && status !== 405) {
-        throw err;
-      }
-      if (!status) {
-        if (/failed to fetch|network ?error|load failed|typeerror|cors|networkerr/i.test(message)) {
-          continue;
-        }
-      }
-      if (!/method not allowed|not found/i.test(message)) {
-        throw err;
-      }
-    }
-  }
-
-  throw lastError;
+  return req<Playlist>(`/playlists/${encodeURIComponent(id)}/update`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
 }
 
 export async function setPlaylistHandle(id: string, handle: string | null) {
-  return req<Playlist>(`/api/playlists/${id}/handle`, {
+  return req<Playlist>(`/playlists/${id}/handle`, {
     method: "PATCH",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ handle }),
@@ -215,7 +111,7 @@ export async function addItemToPlaylist(playlistId: string, trackId: string) {
     track_id: string;
     position?: number;
     added_at?: string;
-  }>(`/api/playlists/${playlistId}/items?track_id=${encodeURIComponent(trackId)}`, {
+  }>(`/playlists/${playlistId}/items?track_id=${encodeURIComponent(trackId)}`, {
     method: "POST",
     headers: authHeaders(),
   });
@@ -231,7 +127,7 @@ export async function removeItemFromPlaylist(
 
   // 1) DELETE /api/playlists/:id/items/:trackId
   try {
-    return await req<{ ok: true }>(`/api/playlists/${pid}/items/${tid}`, {
+    return await req<{ ok: true }>(`/playlists/${pid}/items/${tid}`, {
       method: "DELETE",
       headers: authHeaders(),
     });
@@ -242,7 +138,7 @@ export async function removeItemFromPlaylist(
   // 2) DELETE /api/playlists/:id/items?track_id=...
   try {
     return await req<{ ok: true }>(
-      `/api/playlists/${pid}/items?track_id=${tid}`,
+      `/playlists/${pid}/items?track_id=${tid}`,
       {
         method: "DELETE",
         headers: authHeaders(),
@@ -255,7 +151,7 @@ export async function removeItemFromPlaylist(
     if (e?.status === 405 || /method not allowed/i.test(msg)) {
       try {
         return await postAsDelete(
-          `/api/playlists/${pid}/items?track_id=${tid}`
+          `/playlists/${pid}/items?track_id=${tid}`
         );
       } catch (ee) {
         lastErr = ee;
@@ -265,7 +161,7 @@ export async function removeItemFromPlaylist(
 
   // 4) POST /api/playlists/:id/items/remove { track_id }
   try {
-    return await req<{ ok: true }>(`/api/playlists/${pid}/items/remove`, {
+    return await req<{ ok: true }>(`/playlists/${pid}/items/remove`, {
       method: "POST",
       headers: authHeaders({
         "Content-Type": "application/json",
@@ -291,7 +187,7 @@ export async function removeItemFromPlaylistByMsg(
 
   try {
     return await req<{ ok: true }>(
-      `/api/playlists/${pid}/items/by-msg/${qs(msgId)}?chat=${qs(
+      `/playlists/${pid}/items/by-msg/${qs(msgId)}?chat=${qs(
         chat.replace(/^@/, "")
       )}`,
       { method: "DELETE", headers: authHeaders() }
@@ -302,7 +198,7 @@ export async function removeItemFromPlaylistByMsg(
 
   try {
     return await req<{ ok: true }>(
-      `/api/playlists/${pid}/items?msg_id=${qs(msgId)}&chat=${qs(
+      `/playlists/${pid}/items?msg_id=${qs(msgId)}&chat=${qs(
         chat.replace(/^@/, "")
       )}`,
       { method: "DELETE", headers: authHeaders() }
@@ -313,7 +209,7 @@ export async function removeItemFromPlaylistByMsg(
     if (e?.status === 405 || /method not allowed/i.test(msg)) {
       try {
         return await req<{ ok: true }>(
-          `/api/playlists/${pid}/items?msg_id=${qs(msgId)}&chat=${qs(
+          `/playlists/${pid}/items?msg_id=${qs(msgId)}&chat=${qs(
             chat.replace(/^@/, "")
           )}`,
           {
@@ -331,7 +227,7 @@ export async function removeItemFromPlaylistByMsg(
   }
 
   try {
-    return await req<{ ok: true }>(`/api/playlists/${pid}/items/remove`, {
+    return await req<{ ok: true }>(`/playlists/${pid}/items/remove`, {
       method: "POST",
       headers: authHeaders({
         "Content-Type": "application/json",
@@ -360,7 +256,7 @@ async function postAsDelete(url: string) {
 }
 
 export async function deletePlaylistById(id: string | number) {
-  const url = `/api/playlists/${encodeURIComponent(String(id))}`;
+  const url = `/playlists/${encodeURIComponent(String(id))}`;
   try {
     return await req<{ ok: true }>(url, {
       method: "DELETE",
@@ -415,7 +311,7 @@ export async function deletePlaylist(opts: {
 
 export async function deletePlaylistByHandle(handle: string) {
   const clean = handle.replace(/^@/, "").toLowerCase();
-  const base = `/api/playlists/by-handle/${encodeURIComponent(clean)}`;
+  const base = `/playlists/by-handle/${encodeURIComponent(clean)}`;
   try {
     return await req<{ ok: true }>(base, {
       method: "DELETE",
@@ -446,7 +342,7 @@ export async function deletePlaylistByHandle(handle: string) {
 export async function getPublicPlaylistByHandle(handle: string) {
   const clean = handle.replace(/^@/, "").toLowerCase();
   return req<Playlist>(
-    `/api/playlists/by-handle/${encodeURIComponent(clean)}`,
+    `/playlists/by-handle/${encodeURIComponent(clean)}`,
     {
       method: "GET",
       headers: authHeaders({
@@ -472,7 +368,7 @@ export async function getPublicPlaylistItemsByHandle(
     offset: number;
     total: number;
   }>(
-    `/api/playlists/by-handle/${encodeURIComponent(
+    `/playlists/by-handle/${encodeURIComponent(
       clean
     )}/items?limit=${limit}&offset=${offset}&${bust}`,
     {
@@ -519,7 +415,7 @@ export async function removeItemFromPublicPlaylistByHandle(
   const msgId = t?.msgId != null ? String(t.msgId) : null;
   const chat = (t?.chat || "").replace(/^@/, "");
 
-  const baseByHandle = `/api/playlists/by-handle/${qs(clean)}`;
+  const baseByHandle = `/playlists/by-handle/${qs(clean)}`;
 
   // 1) СНАЧАЛА пробуем по msg_id+chat
   if (msgId && chat) {
@@ -707,7 +603,7 @@ type MyPlaylistResp = {
 
 export async function getMyPersonalPlaylist(limit = 2000, offset = 0) {
   // без кэша, с куками
-  return req<MyPlaylistResp>(`/api/me/playlist?limit=${limit}&offset=${offset}`, {
+  return req<MyPlaylistResp>(`/me/playlist?limit=${limit}&offset=${offset}`, {
     method: "GET",
     headers: authHeaders({
       Accept: "application/json",
@@ -718,7 +614,7 @@ export async function getMyPersonalPlaylist(limit = 2000, offset = 0) {
 }
 
 export async function addItemToMyPersonalPlaylist(trackId: string) {
-  return req<{ ok: true; track_id: string }>(`/api/me/playlist/items`, {
+  return req<{ ok: true; track_id: string }>(`/me/playlist/items`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ track_id: trackId }),
@@ -727,7 +623,7 @@ export async function addItemToMyPersonalPlaylist(trackId: string) {
 
 export async function removeItemFromMyPersonalPlaylist(trackId: string) {
   const tid = encodeURIComponent(trackId);
-  return req<{ ok: true }>(`/api/me/playlist/items/${tid}`, {
+  return req<{ ok: true }>(`/me/playlist/items/${tid}`, {
     method: "DELETE",
     headers: authHeaders(),
   });
@@ -744,7 +640,7 @@ export function openMyPlaylistEventSource(onEvent: (kind: "hello" | "changed") =
   es.addEventListener("playlist", (e: MessageEvent) => {
     const data = String(e?.data || "");
     const kind: "hello" | "changed" = data === "hello" ? "hello" : "changed";
-    try { onEvent(kind); } catch {}
+    try { onEvent(kind); } catch { }
   });
 
   // Браузер также шлёт message на безымянное событие — не используем.
@@ -777,21 +673,21 @@ export async function syncPlaylistWithServer(): Promise<void> {
   const serverIds = new Set(server.map((t) => t.id).filter(Boolean));
   const toPush = local.filter((t) => t?.id && !serverIds.has(t.id));
   for (const t of toPush) {
-    try { await addItemToMyPersonalPlaylist(t.id!); } catch {}
+    try { await addItemToMyPersonalPlaylist(t.id!); } catch { }
   }
 
   // 2) перечитать сервер (на случай, если что-то не допушилось — просто возьмём то, что есть)
   try {
     const r2 = await getMyPersonalPlaylist(4000, 0);
     server = (r2?.items || []) as Track[];
-    total  = r2?.total ?? server.length;
-  } catch {}
+    total = r2?.total ?? server.length;
+  } catch { }
 
   // 3) собрать локальный state: сервер (источник правды) + локальные «хвостом» без дублей
   const seen = new Set<string>();
   const next: Track[] = [];
   for (const t of server) { if (t?.id && !seen.has(t.id)) { seen.add(t.id); next.push(t); } }
-  for (const t of local)  { if (t?.id && !seen.has(t.id)) { seen.add(t.id); next.push(t); } }
+  for (const t of local) { if (t?.id && !seen.has(t.id)) { seen.add(t.id); next.push(t); } }
 
   saveLocal(next);
 }
@@ -818,7 +714,7 @@ export async function hasTrackInPlaylist(
 
   // 1) универсальный фильтр
   const r1 = await tryReq<{ items?: any[]; total?: number }>(
-    `/api/playlists/${pid}/items?track_id=${tid}&limit=1`
+    `/playlists/${pid}/items?track_id=${tid}&limit=1`
   );
   if (r1) {
     if (Array.isArray(r1.items)) return r1.items.length > 0;
@@ -827,19 +723,19 @@ export async function hasTrackInPlaylist(
 
   // 2) алиасы
   const r2 = await tryReq<{ contains?: boolean }>(
-    `/api/playlists/${pid}/items/contains?track_id=${tid}`
+    `/playlists/${pid}/items/contains?track_id=${tid}`
   );
   if (r2 && typeof (r2 as any).contains === "boolean")
     return !!(r2 as any).contains;
 
   const r3 = await tryReq<{ contains?: boolean }>(
-    `/api/playlists/${pid}/contains?track_id=${tid}`
+    `/playlists/${pid}/contains?track_id=${tid}`
   );
   if (r3 && typeof (r3 as any).contains === "boolean")
     return !!(r3 as any).contains;
 
   const r4 = await tryReq<{ has?: boolean }>(
-    `/api/playlists/${pid}/has?track_id=${tid}`
+    `/playlists/${pid}/has?track_id=${tid}`
   );
   if (r4 && typeof (r4 as any).has === "boolean") return !!(r4 as any).has;
 

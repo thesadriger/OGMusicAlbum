@@ -1,9 +1,10 @@
+//home/ogma/ogma/ogma-webapp/src/components/EditPlaylistModal.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { updatePlaylist, type Playlist } from "@/lib/playlists";
 
-const HANDLE_RE = /^[A-Za-z0-9_]{3,32}$/;
+const HANDLE_RE = /^[a-z0-9_][a-z0-9_-]{2,31}$/;
 
 type EditablePlaylist = Pick<Playlist, "id" | "title" | "is_public" | "handle" | "user_id"> & {
   kind?: string;
@@ -216,7 +217,7 @@ export default function EditPlaylistModal({ open, playlist, onClose, onUpdated }
               />
             </div>
             <div className="text-xs text-zinc-500 mt-1">
-              a–z, A–Z, 0–9, подчёркивание, 3–32 символа
+              a–z, 0-9, "_", "-", 3–32 символа
             </div>
           </label>
         )}

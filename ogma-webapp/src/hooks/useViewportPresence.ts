@@ -165,7 +165,7 @@ export function useViewportPresence<T extends HTMLElement = HTMLElement>(
         for (const entry of entries) {
           if (entry.target !== element) continue;
 
-          const visible = isEntryVisible(entry, targetRatio);
+          const visible = isEntryVisible(entry, targetRatio, margin);
           markVisible(visible);
 
           if (visible && persistOnEnter) {
@@ -271,21 +271,26 @@ function isElementInViewport(element: Element, ratio: number, margin: string): b
   return isVisibleByRectangles(domRectToRectLike(rect), viewportRect, ratio);
 }
 
-function isEntryVisible(entry: IntersectionObserverEntry, ratio: number): boolean {
-  if (!entry.isIntersecting) {
-    return ratio === 0 && entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0;
-  }
-
-  const viewportRect = entry.rootBounds
-    ? domRectToRectLike(entry.rootBounds)
-    : getGlobalViewportRect();
-
-  return isVisibleByRectangles(
-    domRectToRectLike(entry.boundingClientRect),
-    viewportRect,
-    ratio,
-    domRectToRectLike(entry.intersectionRect)
+function isEntryVisible(entry: IntersectionObserverEntry, ratio: number, margin: string): boolean {
+  const viewport = getViewportMetrics();
+  const [marginTop, marginRight, marginBottom, marginLeft] = parseRootMargin(
+    margin,
+    viewport.width,
+    viewport.height
   );
+
+  const viewportRect = createViewportRect(
+    viewport.width,
+    viewport.height,
+    marginTop,
+    marginRight,
+    marginBottom,
+    marginLeft,
+    viewport.offsetTop,
+    viewport.offsetLeft
+  );
+
+  return isVisibleByRectangles(domRectToRectLike(entry.boundingClientRect), viewportRect, ratio);
 }
 
 function getViewportMetrics(): ViewportMetrics {
@@ -345,6 +350,33 @@ function createViewportRect(
   offsetTop = 0,
   offsetLeft = 0
 ): RectLike {
+  if (typeof window !== "undefined") {
+    const { scrollX, scrollY } = getScrollOffsets();
+    const { width: docWidth, height: docHeight } = getDocumentDimensions();
+
+    if (marginTop < 0) {
+      const availableTop = Math.max(0, scrollY + offsetTop);
+      marginTop = -Math.min(-marginTop, availableTop);
+    }
+
+    if (marginBottom < 0) {
+      const viewportBottom = scrollY + offsetTop + viewportHeight;
+      const availableBottom = Math.max(0, docHeight - viewportBottom);
+      marginBottom = -Math.min(-marginBottom, availableBottom);
+    }
+
+    if (marginLeft < 0) {
+      const availableLeft = Math.max(0, scrollX + offsetLeft);
+      marginLeft = -Math.min(-marginLeft, availableLeft);
+    }
+
+    if (marginRight < 0) {
+      const viewportRight = scrollX + offsetLeft + viewportWidth;
+      const availableRight = Math.max(0, docWidth - viewportRight);
+      marginRight = -Math.min(-marginRight, availableRight);
+    }
+  }
+
   const top = offsetTop - marginTop;
   const left = offsetLeft - marginLeft;
   const right = offsetLeft + viewportWidth + marginRight;
@@ -469,4 +501,53 @@ function parseMarginValue(value: string, size: number): number {
   }
 
   return numeric;
+}
+
+function getScrollOffsets(): { scrollX: number; scrollY: number } {
+  if (typeof window === "undefined") {
+    return { scrollX: 0, scrollY: 0 };
+  }
+
+  const doc = document.documentElement;
+  const body = document.body;
+
+  const scrollX =
+    window.scrollX ??
+    window.pageXOffset ??
+    doc?.scrollLeft ??
+    body?.scrollLeft ??
+    0;
+  const scrollY =
+    window.scrollY ??
+    window.pageYOffset ??
+    doc?.scrollTop ??
+    body?.scrollTop ??
+    0;
+
+  return { scrollX, scrollY };
+}
+
+function getDocumentDimensions(): { width: number; height: number } {
+  if (typeof document === "undefined") {
+    return { width: 0, height: 0 };
+  }
+
+  const doc = document.documentElement;
+  const body = document.body;
+
+  const width = Math.max(
+    doc?.scrollWidth ?? 0,
+    body?.scrollWidth ?? 0,
+    doc?.clientWidth ?? 0,
+    body?.clientWidth ?? 0
+  );
+
+  const height = Math.max(
+    doc?.scrollHeight ?? 0,
+    body?.scrollHeight ?? 0,
+    doc?.clientHeight ?? 0,
+    body?.clientHeight ?? 0
+  );
+
+  return { width, height };
 }

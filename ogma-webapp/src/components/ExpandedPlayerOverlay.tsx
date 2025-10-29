@@ -5,40 +5,19 @@ import {
   useMemo,
   useRef,
   useState,
-  type ComponentType,
 } from "react";
 import { createPortal } from "react-dom";
 import type { Track } from "@/types/types";
 
 // backgrounds
 import ElasticSlider from "@/components/ElasticSlider";
-import LiquidChrome from "@/components/backgrounds/LiquidChrome";
-import Squares from "@/components/backgrounds/Squares";
-import LetterGlitch from "@/components/backgrounds/LetterGlitch";
-import Orb from "@/components/backgrounds/Orb";
-import Ballpit from "@/components/backgrounds/Ballpit";
-import Waves from "@/components/backgrounds/Waves";
-import Iridescence from "@/components/backgrounds/Iridescence";
-import Hyperspeed from "@/components/backgrounds/Hyperspeed";
-import Threads from "@/components/backgrounds/Threads";
-import DotGrid from "@/components/backgrounds/DotGrid";
-import RippleGrid from "@/components/backgrounds/RippleGrid";
-import FaultyTerminal from "@/components/backgrounds/FaultyTerminal";
-import Dither from "@/components/backgrounds/Dither";
-import Galaxy from "@/components/backgrounds/Galaxy";
-import PrismaticBurst from "@/components/backgrounds/PrismaticBurst";
-import Lightning from "@/components/backgrounds/Lightning";
-import Beams from "@/components/backgrounds/Beams";
-import GradientBlinds from "@/components/backgrounds/GradientBlinds";
-import Particles from "@/components/backgrounds/Particles";
-import Plasma from "@/components/backgrounds/Plasma";
-import Aurora from "@/components/backgrounds/Aurora";
-import PixelBlast from "@/components/backgrounds/PixelBlast";
-import LightRays from "@/components/backgrounds/LightRays";
-import Silk from "@/components/backgrounds/Silk";
-import DarkVeil from "@/components/backgrounds/DarkVeil";
-import Prism from "@/components/backgrounds/Prism";
-import LiquidEther from "@/components/backgrounds/LiquidEther";
+import {
+  BACKGROUND_KEYS,
+  LETTER_GLITCH_KEY,
+  isBackgroundKey,
+  useBackgroundComponent,
+  type BackgroundKey,
+} from "@/components/backgrounds/registry";
 
 // components
 import RoundGlassButton from "@/components/RoundGlassButton";
@@ -76,70 +55,8 @@ type Props = {
   onAddToPlaylist?: (t: Track) => void;
 };
 
-type BackgroundComponent = ComponentType<any>;
-
-const BACKGROUNDS: BackgroundComponent[] = [
-  LiquidChrome,
-  Squares,
-  LetterGlitch,
-  Orb,
-  Ballpit,
-  Waves,
-  Iridescence,
-  Hyperspeed,
-  Threads,
-  DotGrid,
-  RippleGrid,
-  FaultyTerminal,
-  Dither,
-  Galaxy,
-  PrismaticBurst,
-  Lightning,
-  Beams,
-  GradientBlinds,
-  Particles,
-  Plasma,
-  Aurora,
-  PixelBlast,
-  LightRays,
-  Silk,
-  DarkVeil,
-  Prism,
-  LiquidEther,
-];
-
 // базовый нижний отступ контента.
 const GESTURE_HINTS_SPACE = 84;
-
-const BG_BY_KEY: Record<string, BackgroundComponent> = {
-  LiquidChrome,
-  Squares,
-  LetterGlitch,
-  Orb,
-  Ballpit,
-  Waves,
-  Iridescence,
-  Hyperspeed,
-  Threads,
-  DotGrid,
-  RippleGrid,
-  FaultyTerminal,
-  Dither,
-  Galaxy,
-  PrismaticBurst,
-  Lightning,
-  Beams,
-  GradientBlinds,
-  Particles,
-  Plasma,
-  Aurora,
-  PixelBlast,
-  LightRays,
-  Silk,
-  DarkVeil,
-  Prism,
-  LiquidEther,
-};
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp = (x: number, min: number, max: number) =>
@@ -152,31 +69,31 @@ const DEFAULT_GESTURE_HINTS_SPACE = 0;
 const GESTURE_HINTS_GAP_PX = 15;
 const SHOW_GESTURE_HINTS = false; // можно быстро вернуть подсказки, поменяв на true
 
-function pickBackground(trackId: string | number | null | undefined) {
+function pickBackgroundKey(trackId: string | number | null | undefined): BackgroundKey {
+  const fallback: BackgroundKey = BACKGROUND_KEYS[0] ?? ("LiquidChrome" as BackgroundKey);
+  const pool = BACKGROUND_KEYS.length ? BACKGROUND_KEYS : [fallback];
   const idStr = trackId == null ? "" : String(trackId);
   let hash = 0;
   for (let i = 0; i < idStr.length; i += 1) {
     hash = (hash * 31 + idStr.charCodeAt(i)) >>> 0;
   }
 
+  const hashed = pool[hash % pool.length] ?? pool[0];
+
   const mode =
     (typeof window !== "undefined"
-      ? (localStorage.getItem("ogma_track_bg_mode") as
-        | "random"
-        | "fixed"
-        | null)
+      ? (localStorage.getItem("ogma_track_bg_mode") as "random" | "fixed" | null)
       : null) ?? "random";
 
   if (mode === "fixed") {
     const key =
-      (typeof window !== "undefined"
-        ? localStorage.getItem("ogma_track_bg_key")
-        : null) || "";
-    if (key && BG_BY_KEY[key]) return BG_BY_KEY[key];
+      (typeof window !== "undefined" ? localStorage.getItem("ogma_track_bg_key") : null) || "";
+    if (key && isBackgroundKey(key)) {
+      return key;
+    }
   }
 
-  const idx = BACKGROUNDS.length ? hash % BACKGROUNDS.length : 0;
-  return BACKGROUNDS[idx] || Waves;
+  return hashed;
 }
 
 function getLetterGlitchProps(track: Track | null) {
@@ -464,15 +381,16 @@ export default function ExpandedPlayerOverlay({
   const borderRadius = lerp(18, 28, progress);
   const shadowOpacity = 0.12 + 0.28 * progress;
 
-  const Bg = useMemo(
-    () => pickBackground(track?.id ?? null),
+  const backgroundKey = useMemo<BackgroundKey>(
+    () => pickBackgroundKey(track?.id ?? null),
     [track?.id]
   );
 
-  const bgExtra =
-    Bg === (LetterGlitch as unknown as BackgroundComponent)
-      ? getLetterGlitchProps(track)
-      : {};
+  const Background = useBackgroundComponent(backgroundKey, {
+    enabled: !!track,
+  });
+
+  const bgExtra = backgroundKey === LETTER_GLITCH_KEY ? getLetterGlitchProps(track) : {};
 
   // стиль основного окна плеера
   const overlayStyle: React.CSSProperties = {
@@ -650,7 +568,14 @@ export default function ExpandedPlayerOverlay({
           <div className="relative flex-1 overflow-hidden">
             {/* фон с анимированным бэкграундом */}
             <div className="absolute inset-0">
-              <Bg className="absolute inset-0 w-full h-full" {...bgExtra} />
+              {Background ? (
+                <Background className="absolute inset-0 w-full h-full" {...bgExtra} />
+              ) : (
+                <div
+                  className="absolute inset-0 w-full h-full bg-[radial-gradient(120%_75%_at_50%_0%,rgba(255,255,255,.04)_0%,rgba(255,255,255,0)_60%)]"
+                  aria-hidden="true"
+                />
+              )}
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-black/60" />
             </div>
 

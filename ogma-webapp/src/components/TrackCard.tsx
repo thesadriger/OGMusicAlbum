@@ -170,9 +170,13 @@ export function TrackCard({
         toast === "sending" || toast === "sent" ? "bg-blue-600/85" : "bg-black/70";
 
   const cardRef = useRef<HTMLDivElement | null>(null);
-  const { ref: presenceRef, className: presenceClassName, isVisible: cardInView } = useViewportPresence<HTMLDivElement>({
+  const {
+    ref: presenceRef,
+    className: presenceClassName,
+    isVisible: cardInView,
+  } = useViewportPresence<HTMLDivElement>({
     amount: 0.35,
-    margin: "-20% 0px",
+    margin: "0px",
   });
   const setCardRef = useCallback((node: HTMLDivElement | null) => {
     cardRef.current = node;
@@ -931,13 +935,13 @@ export function TrackCard({
         {/* Контент трека */}
         <div className="flex items-center gap-3 relative">
           <div className="flex-1 min-w-0 pr-20 md:pr-24 text-left">
-            <div className="text-base font-semibold truncate text-white drop-shadow-[0_1px_2px_rgba(0,0,0,.35)]">
+            <div className="text-base font-semibold truncate text-zinc-900 dark:text-white dark:drop-shadow-[0_1px_2px_rgba(0,0,0,.35)]">
               {t.title}
             </div>
-            <div className="text-sm truncate text-zinc-200 drop-shadow-[0_1px_2px_rgba(0,0,0,.35)]">
+            <div className="text-sm truncate text-zinc-600 dark:text-zinc-200 dark:drop-shadow-[0_1px_2px_rgba(0,0,0,.35)]">
               {t.artists?.join(", ")}
             </div>
-            <div className="mt-1 text-xs truncate text-zinc-300/80 drop-shadow-[0_1px_1px_rgba(0,0,0,.35)]">
+            <div className="mt-1 text-xs truncate text-zinc-500 dark:text-zinc-300/80 dark:drop-shadow-[0_1px_1px_rgba(0,0,0,.35)]">
               {t.hashtags?.join(" ")}
             </div>
           </div>

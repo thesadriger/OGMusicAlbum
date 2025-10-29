@@ -108,6 +108,9 @@ const BACKGROUNDS: BackgroundComponent[] = [
   LiquidEther,
 ];
 
+// базовый нижний отступ контента.
+const GESTURE_HINTS_SPACE = 84;
+
 const BG_BY_KEY: Record<string, BackgroundComponent> = {
   LiquidChrome,
   Squares,
@@ -609,7 +612,7 @@ export default function ExpandedPlayerOverlay({
             {/* контент */}
             <div className="relative h-full flex flex-col">
               {/* header */}
-              <div className="flex items-center justify-between px-6 pt-6">
+              <div className="flex items-center justify-between px-5 pt-5">
                 <span className="text-[15px] tracking-[0.15em] text-white/70">
                   OGMusicAlbum
                 </span>
@@ -626,12 +629,15 @@ export default function ExpandedPlayerOverlay({
 
               {/* центр (инфо трека / слайдер / контролы) */}
               <div
-                className="flex-1 flex flex-col items-center justify-end gap-5 px-5 pb-5"
+                className="flex-1 flex flex-col items-center justify-end gap-5 px-5"
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
                 onPointerCancel={onPointerCancel}
-                style={{ touchAction: "none" }}
+                style={{
+                  touchAction: "none",
+                  paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + ${GESTURE_HINTS_SPACE}px)`,
+                }}
               >
                 {/* трек-инфо */}
                 <div className="text-center space-y-2">

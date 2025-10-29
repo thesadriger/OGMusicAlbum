@@ -4,6 +4,7 @@ import { apiGet, ApiError } from "@/lib/api";
 import type { Track } from "@/types/types";
 import SearchResultItem from "@/components/search/SearchResultItem";
 import { TrackCard } from "@/components/TrackCard";
+import AnimatedList from "@/components/AnimatedList";
 import { useContentFilter, filterTracksUniqueByTitle } from "@/hooks/useContentFilter";
 import { goPlaylistHandle } from "@/lib/router";
 
@@ -373,20 +374,25 @@ export default function GlobalSearch({
             Треки
           </div>
           {tracksShown.length > 0 ? (
-            <div className="space-y-3">
-              {tracksShown.map((t, i) => (
-                <TrackCard
-                  key={t.id}
-                  t={t}
-                  isActive={nowId === t.id}
-                  isPaused={paused}
-                  onToggle={() => onToggleTrack(tracksShown, i)}
-                  onRequestExpand={onRequestExpand}
-                  hideDuringExpand={expandedTrackId === t.id}
-                  onCardElementChange={onCardElementChange}
-                />
-              ))}
-            </div>
+            <AnimatedList
+              items={tracksShown.map((t, i) => ({
+                key: t.id,
+                content: (
+                  <TrackCard
+                    t={t}
+                    isActive={nowId === t.id}
+                    isPaused={paused}
+                    onToggle={() => onToggleTrack(tracksShown, i)}
+                    onRequestExpand={onRequestExpand}
+                    hideDuringExpand={expandedTrackId === t.id}
+                    onCardElementChange={onCardElementChange}
+                  />
+                ),
+              }))}
+              listClassName="space-y-3"
+              scrollable={false}
+              showGradients={false}
+            />
           ) : (
             <div className="text-sm text-zinc-500 pl-1">Ничего не найдено.</div>
           )}

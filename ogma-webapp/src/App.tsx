@@ -30,7 +30,6 @@ import { useMe } from "@/hooks/useMe";
 import TracksCarousel from "@/components/TracksCarousel";
 import AddToPlaylistPopover from "@/components/AddToPlaylistPopover";
 import GlobalSearch from "@/components/GlobalSearch";
-import SplitText from "@/components/SplitText";
 import ShinyText from "@/components/ShinyText";
 
 type RecsResp = { items: Track[]; limit: number };
@@ -52,11 +51,7 @@ export default function App() {
   const rawName = (me?.name || me?.username || "").trim();
   const ownerLabel = (rawName.split(/\s+/)[0] || "").trim();
   const playlistTitle = ownerLabel ? `${ownerLabel}'s MusicAlbum` : "MusicAlbum";
-  const [titleAnimated, setTitleAnimated] = useState(false);
 
-  useEffect(() => {
-    setTitleAnimated(false);
-  }, [playlistTitle]);
 
   const [recs, setRecs] = useState<Track[]>([]);
   const recsShuffled = useMemo(() => {
@@ -427,25 +422,26 @@ export default function App() {
               <div className="flex items-center gap-3">
                 <button
                   onClick={goPlaylist}
-                  className="text-2xl font-bold hover:opacity-90 max-w-[70vw]"
+                  className="hover:opacity-90"
                   title={`Открыть плейлист: ${playlistTitle}`}
                   aria-label={`Открыть плейлист: ${playlistTitle}`}
                 >
-                  {titleAnimated ? (
+                  <span
+                    className="
+                      block
+                      max-w-[70vw]
+                      overflow-hidden
+                      whitespace-nowrap
+                      text-2xl
+                      font-bold
+                      leading-tight
+                    "
+                  >
                     <ShinyText
                       text={playlistTitle}
-                      className="truncate max-w-[70vw]"
+                      className="whitespace-nowrap leading-tight"
                     />
-                  ) : (
-                    <SplitText
-                      text={playlistTitle}
-                      className="truncate max-w-[70vw]"
-                      tag="span"
-                      textAlign="left"
-                      delay={40}
-                      onLetterAnimationComplete={() => setTitleAnimated(true)}
-                    />
-                  )}
+                  </span>
                 </button>
               </div>
               <UserAvatar />

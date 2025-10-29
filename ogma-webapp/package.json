@@ -16,7 +16,7 @@
     "test:android": "playwright test -g 'Pixel 7'"
   },
   "dependencies": {
-    "@gsap/react": "^2.1.1",
+    "@gsap/react": "^2.1.2",
     "@openai/codex": "^0.50.0",
     "@prisma/client": "^6.18.0",
     "@react-three/drei": "^10.7.6",

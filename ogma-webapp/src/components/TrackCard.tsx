@@ -1,5 +1,5 @@
 // /home/ogma/ogma/ogma-webapp/src/components/TrackCard.tsx
-import { useEffect, useMemo, useRef, useState, useCallback, type ComponentType, type MutableRefObject } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, useImperativeHandle, forwardRef, type ComponentType, type MutableRefObject } from "react";
 import Counter from "@/components/Counter";
 import type { Track } from "@/types/types";
 import { sendTrackToMe } from "@/lib/api";
@@ -68,6 +68,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   const [scrubbing, setScrubbing] = useState(false);
   const [scrubPct, setScrubPct] = useState(0);
   const lastProgressRef = useRef(0);
+  const progressOverlayRef = useRef<TrackProgressOverlayHandle | null>(null);
 
   const [dx, setDx] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -601,6 +602,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
         setScrubbing(true);
         setScrubPct(pct);
         lastProgressRef.current = pct;
+        progressOverlayRef.current?.setVisualProgress(pct);
         swipeControllerRef.current?.freeze();
         setDragging(false);
         settleState({ dx: 0, anim: "snap", leftOpen: false });
@@ -608,6 +610,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
       onScrubProgress: (pct) => {
         setScrubPct(pct);
         lastProgressRef.current = pct;
+        progressOverlayRef.current?.setVisualProgress(pct);
         const audio = getAudio();
         if (audio && Number.isFinite(audio.duration) && audio.duration > 0) {
           audio.currentTime = pct * audio.duration;
@@ -617,6 +620,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
         setScrubbing(false);
         swipeControllerRef.current?.unfreeze();
         settleState({ dx: 0, anim: "snap", leftOpen: false });
+        progressOverlayRef.current?.setVisualProgress(lastProgressRef.current);
       },
       onHapticImpact: (kind) => hapticImpactRef.current(kind),
     });
@@ -778,6 +782,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
             </div>
 
             <TrackProgressOverlay
+              ref={progressOverlayRef}
               trackId={t.id}
               isActive={!!isActive}
               getAudio={getAudio}
@@ -917,6 +922,10 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   );
 }
 
+type TrackProgressOverlayHandle = {
+  setVisualProgress: (pct: number) => void;
+};
+
 type TrackProgressOverlayProps = {
   trackId: string | number;
   isActive: boolean;
@@ -926,7 +935,7 @@ type TrackProgressOverlayProps = {
   lastProgressRef: MutableRefObject<number>;
 };
 
-function TrackProgressOverlay({ trackId, isActive, getAudio, scrubbing, scrubPct, lastProgressRef }: TrackProgressOverlayProps) {
+const TrackProgressOverlay = forwardRef<TrackProgressOverlayHandle, TrackProgressOverlayProps>(function TrackProgressOverlay({ trackId, isActive, getAudio, scrubbing, scrubPct, lastProgressRef }, ref) {
   const barRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const scrubbingRef = useRef(scrubbing);
@@ -943,7 +952,13 @@ function TrackProgressOverlay({ trackId, isActive, getAudio, scrubbing, scrubPct
     scrubbingRef.current = scrubbing;
   }, [scrubbing]);
 
-  // во время скраба двигаем плёнку по scrubPct
+  useImperativeHandle(ref, () => ({
+    setVisualProgress: (pct: number) => {
+      lastProgressRef.current = pct;
+      setWidth(pct);
+    },
+  }), [setWidth, lastProgressRef]);
+
   useEffect(() => {
     if (scrubbing) {
       setWidth(scrubPct);
@@ -1055,7 +1070,7 @@ function TrackProgressOverlay({ trackId, isActive, getAudio, scrubbing, scrubPct
       />
     </div>
   );
-}
+});
 
 type TrackTimerProps = {
   trackId: string | number;

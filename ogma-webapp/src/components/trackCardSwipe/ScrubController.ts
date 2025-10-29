@@ -1,4 +1,3 @@
-//home/ogma/ogma/ogma-webapp/src/components/trackCardSwipe/ScrubController.ts
 import type { ScrubCallbacks } from "./types";
 
 // SCRUB_HOLD_MS — сколько держим палец перед переходом в режим скраба.

@@ -37,6 +37,14 @@ import DarkVeil from "@/components/backgrounds/DarkVeil";
 import Prism from "@/components/backgrounds/Prism";
 import LiquidEther from "@/components/backgrounds/LiquidEther";
 import GlassSurface from "@/components/GlassSurface";
+import {
+  SwipeController,
+  TRIGGER_COMMIT,
+  LEFT_REVEAL,
+  LEFT_MIN_OPEN,
+} from "@/components/trackCardSwipe/SwipeController";
+import { ScrubController } from "@/components/trackCardSwipe/ScrubController";
+import type { SwipeReleaseDecision } from "@/components/trackCardSwipe/SwipeController";
 
 type Props = {
   t: Track;
@@ -52,40 +60,30 @@ type Props = {
 };
 
 
-const TRIGGER_COMMIT = 84;
-const MAX_SWIPE = 160;
-const LEFT_REVEAL = 96;
-const LEFT_MIN_OPEN = 28;
-const SCRUB_SENS = 1.5;
-
-// --- параметры натяжения/вибрации ---
-const FULL_PULL_PCT = 0.30;
-const BUZZ_MIN_MS = 18;
-const BUZZ_MAX_MS = 220;
-
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
-const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 type MyPlaylist = { id: string; title: string; is_public: boolean; handle?: string | null };
 
 export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", onRemoveFromPublic, forceBgMode, forceBgKey, }: Props) {
-  const startX = useRef<number | null>(null);
-  const startY = useRef<number | null>(null);
-  const cancelledByScroll = useRef(false);
-
-  // SCRUB
-  const holdTimer = useRef<number | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const [scrubPct, setScrubPct] = useState(0);
-  const scrubStart = useRef<{ pct: number; x: number; width: number }>({ pct: 0, x: 0, width: 1 });
   const lastProgressRef = useRef(0);
 
   const [dx, setDx] = useState(0);
-  const [drag, setDrag] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [anim, setAnim] = useState<"none" | "snap" | "remove">("none");
   const [leftOpen, setLeftOpen] = useState(false);
   const [toast, setToast] = useState<null | "added" | "exists" | "removed" | "sending" | "sent" | "error">(null);
   const [addedWhere, setAddedWhere] = useState<string | null>(null);
+
+  const swipeControllerRef = useRef<SwipeController | null>(null);
+  const scrubControllerRef = useRef<ScrubController | null>(null);
+
+  const settleState = useCallback((next: { dx: number; anim: "none" | "snap" | "remove"; leftOpen: boolean }) => {
+    setAnim(next.anim);
+    setDx(next.dx);
+    setLeftOpen(next.leftOpen);
+  }, []);
 
   // выбор плейлиста
   const [chooseOpen, setChooseOpen] = useState(false);
@@ -133,7 +131,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   const [frozen, setFrozen] = useState(false);
   const FROZEN_DX = TRIGGER_COMMIT + 18;
 
-  const showBg = frozen || drag || Math.abs(dx) > 1 || leftOpen;
+  const showBg = frozen || dragging || Math.abs(dx) > 1 || leftOpen;
 
   const toastBgClass =
     toast === "added" || toast === "exists" ? "bg-emerald-600/85" :
@@ -143,8 +141,6 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   const cardRef = useRef<HTMLDivElement | null>(null);
   const fullPullPxRef = useRef(120);
   const pivotYRef = useRef(50);
-  const lastBuzzAtRef = useRef(0);
-  const crossedRef = useRef({ left: false, right: false, reveal: false });
 
   useEffect(() => {
     if (!toast) return;
@@ -401,8 +397,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
           setServerContains(map);
         } catch { }
         setFrozen(true);
-        setAnim("snap");
-        setDx(FROZEN_DX);
+        settleState({ dx: FROZEN_DX, anim: "snap", leftOpen: false });
         setChooseOpen(true);
         hapticImpact("light");
         return;
@@ -415,11 +410,10 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   // разморозка после закрытия поповера
   useEffect(() => {
     if (!chooseOpen && frozen) {
-      setAnim("snap");
-      setDx(0);
+      settleState({ dx: 0, anim: "snap", leftOpen: false });
       setFrozen(false);
     }
-  }, [chooseOpen, frozen]);
+  }, [chooseOpen, frozen, settleState]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -488,193 +482,217 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     try { await sendTrackToMe(t); setToast("sent"); } catch { setToast("error"); }
   };
 
-  const moveRaf = useRef<number | null>(null);
-  const pendingMove = useRef<{ x: number, y: number } | null>(null);
+  const performCommitRemove = useCallback(async () => {
+    settleState({ dx: 0, anim: "remove", leftOpen: false });
+    hapticImpact("heavy");
+    try {
+      if (mode === "playlist" && onRemoveFromPublic) {
+        await onRemoveFromPublic(t);
+      } else {
+        removeFromPlaylist(t.id);
+      }
+      setToast("removed");
+    } catch {
+      setToast("error");
+    } finally {
+      setTimeout(() => {
+        settleState({ dx: 0, anim: "snap", leftOpen: false });
+      }, 200);
+    }
+  }, [mode, onRemoveFromPublic, t, hapticImpact, settleState]);
 
-  // ВЕСЬ расчёт переносим сюда, вычисляем nextDx локально
-  const pumpMove = () => {
-    moveRaf.current = null;
+  const handleSwipeRelease = useCallback((decision: SwipeReleaseDecision) => {
+    const finalize = (anim: "none" | "snap" | "remove" = decision.anim, left = decision.leftOpen, dxTarget = decision.targetDx) => {
+      settleState({ dx: dxTarget, anim, leftOpen: left });
+    };
+
+    switch (decision.outcome) {
+      case "tap": {
+        finalize("snap", false, 0);
+        if (isActive) {
+          onToggle();
+        } else {
+          emitPlayTrack(t);
+          onToggle();
+        }
+        break;
+      }
+      case "leftPeekTap": {
+        finalize("snap", false, 0);
+        if (mode === "playlist") {
+          void performCommitRemove();
+        } else {
+          void commitDownload();
+        }
+        break;
+      }
+      case "commitRight": {
+        finalize("snap", false, 0);
+        if (mode === "default") {
+          awaitMaybe(commitAdd)();
+        } else {
+          void commitDownload();
+        }
+        break;
+      }
+      case "commitLeft": {
+        if (mode === "playlist") {
+          void performCommitRemove();
+        } else {
+          void commitDownload();
+          finalize("snap", false, 0);
+        }
+        break;
+      }
+      case "openLeftPeek": {
+        finalize("snap", true, -LEFT_REVEAL);
+        break;
+      }
+      case "close":
+      case "cancelledByScroll": {
+        finalize("snap", decision.leftOpen, decision.targetDx);
+        break;
+      }
+      default:
+        finalize("snap", false, 0);
+    }
+  }, [commitDownload, isActive, mode, onToggle, performCommitRemove, settleState, t]);
+
+  const handleSwipeReleaseRef = useRef(handleSwipeRelease);
+  useEffect(() => { handleSwipeReleaseRef.current = handleSwipeRelease; }, [handleSwipeRelease]);
+
+  const hapticImpactRef = useRef(hapticImpact);
+  useEffect(() => { hapticImpactRef.current = hapticImpact; }, [hapticImpact]);
+
+  const hapticTickRef = useRef(hapticTick);
+  useEffect(() => { hapticTickRef.current = hapticTick; }, [hapticTick]);
+
+  useEffect(() => {
+    const swipe = new SwipeController({
+      onDragStart: ({ pivotY, fullPullPx }) => {
+        pivotYRef.current = pivotY;
+        fullPullPxRef.current = fullPullPx;
+        setDragging(true);
+        setAnim("none");
+      },
+      onDragMove: (nextDx) => {
+        setDx(nextDx);
+      },
+      onDragEnd: () => {
+        setDragging(false);
+      },
+      onRelease: (decision) => {
+        handleSwipeReleaseRef.current(decision);
+      },
+      onHapticTick: () => {
+        if (!scrubControllerRef.current?.isScrubbing()) {
+          hapticTickRef.current();
+        }
+      },
+      onHapticImpact: (kind) => {
+        hapticImpactRef.current(kind);
+      },
+    });
+    swipeControllerRef.current = swipe;
+    return () => {
+      swipe.dispose();
+      swipeControllerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const scrub = new ScrubController({
+      onScrubStart: ({ pct }) => {
+        setScrubbing(true);
+        setScrubPct(pct);
+        lastProgressRef.current = pct;
+        swipeControllerRef.current?.freeze();
+        setDragging(false);
+        settleState({ dx: 0, anim: "snap", leftOpen: false });
+      },
+      onScrubProgress: (pct) => {
+        setScrubPct(pct);
+        lastProgressRef.current = pct;
+        const audio = getAudio();
+        if (audio && Number.isFinite(audio.duration) && audio.duration > 0) {
+          audio.currentTime = pct * audio.duration;
+        }
+      },
+      onScrubEnd: () => {
+        setScrubbing(false);
+        swipeControllerRef.current?.unfreeze();
+        settleState({ dx: 0, anim: "snap", leftOpen: false });
+      },
+      onHapticImpact: (kind) => hapticImpactRef.current(kind),
+    });
+    scrubControllerRef.current = scrub;
+    return () => {
+      scrub.dispose();
+      scrubControllerRef.current = null;
+    };
+  }, [getAudio, settleState]);
+
+  useEffect(() => {
+    const swipe = swipeControllerRef.current;
+    if (!swipe) return;
+    if (frozen || chooseOpen) swipe.freeze();
+    else swipe.unfreeze();
+  }, [chooseOpen, frozen]);
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (frozen || chooseOpen) return;
-    if (!drag || startX.current == null || startY.current == null) return;
-    if (!pendingMove.current) return;
+    const swipe = swipeControllerRef.current;
+    const scrub = scrubControllerRef.current;
+    if (!swipe || !scrub) return;
 
-    const { x, y } = pendingMove.current;
-    pendingMove.current = null;
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
 
-    const deltaX = x - (startX.current as number);
-    const deltaY = y - (startY.current as number);
-
-    if (Math.abs(deltaY) > 8 && Math.abs(deltaY) > Math.abs(deltaX)) {
-      cancelledByScroll.current = true;
-    }
-
-    if (!scrubbing && holdTimer.current && (Math.abs(deltaX) > 6 || Math.abs(deltaY) > 6)) {
-      clearTimeout(holdTimer.current);
-      holdTimer.current = null;
-    }
-
-    if (scrubbing) {
-      const { pct, x: sx, width } = scrubStart.current;
-      const dp = ((x - sx) / Math.max(1, width)) * SCRUB_SENS;
-      const next = clamp(pct + dp, 0, 1);
-      setScrubPct(next);
-      lastProgressRef.current = next;
-      const a = getAudio();
-      if (a && isFinite(a.duration) && a.duration > 0) a.currentTime = next * a.duration;
-      return;
-    }
-
-    let delta = deltaX;
-    if (leftOpen) delta -= -LEFT_REVEAL;
-    const limited = delta > 0 ? Math.min(MAX_SWIPE, delta) : Math.max(-MAX_SWIPE, delta);
-    const nextDx = leftOpen ? -LEFT_REVEAL + limited : limited;
-    setDx(nextDx);
-
-    const pull = clamp(Math.abs(nextDx + (leftOpen ? LEFT_REVEAL : 0)) / Math.max(1, fullPullPxRef.current), 0, 1);
-    if (pull < 1) {
-      const interval = lerp(BUZZ_MIN_MS, BUZZ_MAX_MS, pull);
-      const now = performance.now();
-      if (now - lastBuzzAtRef.current >= interval) { hapticTick(); lastBuzzAtRef.current = now; }
-    }
-
-    if (nextDx >= TRIGGER_COMMIT && !crossedRef.current.right) { hapticImpact("medium"); crossedRef.current.right = true; }
-    else if (nextDx < TRIGGER_COMMIT && crossedRef.current.right) { crossedRef.current.right = false; }
-
-    if (nextDx <= -TRIGGER_COMMIT && !crossedRef.current.left) { hapticImpact("medium"); crossedRef.current.left = true; }
-    else if (nextDx > -TRIGGER_COMMIT && crossedRef.current.left) { crossedRef.current.left = false; }
-
-    if (nextDx <= -LEFT_MIN_OPEN && !crossedRef.current.reveal) { hapticImpact("light"); crossedRef.current.reveal = true; }
-    else if (nextDx > -LEFT_MIN_OPEN && crossedRef.current.reveal) { crossedRef.current.reveal = false; }
+    swipe.pointerDown({ x: e.clientX, y: e.clientY, rect, leftOpen });
+    const basePct = clamp(Number.isFinite(lastProgressRef.current) ? lastProgressRef.current : 0, 0, 1);
+    scrub.pointerDown({
+      x: e.clientX,
+      y: e.clientY,
+      rect,
+      initialPct: basePct,
+      isActive: !!isActive,
+    });
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     if (frozen || chooseOpen) return;
-    if (!drag || startX.current == null || startY.current == null) return;
+    const swipe = swipeControllerRef.current;
+    const scrub = scrubControllerRef.current;
+    if (!swipe || !scrub) return;
 
-    pendingMove.current = { x: e.clientX, y: e.clientY };
-    if (moveRaf.current == null) {
-      moveRaf.current = requestAnimationFrame(pumpMove);
+    scrub.pointerMove({ x: e.clientX, y: e.clientY });
+    if (!scrub.isScrubbing()) {
+      swipe.pointerMove({ x: e.clientX, y: e.clientY });
     }
-  };
-
-  // ВАЖНО: хук очистки — НА УРОВНЕ КОМПОНЕНТА, а не внутри onPointerMove
-  useEffect(() => {
-    return () => {
-      if (moveRaf.current) cancelAnimationFrame(moveRaf.current);
-    };
-  }, []);
-
-  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (frozen || chooseOpen) return;
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    startX.current = e.clientX;
-    startY.current = e.clientY;
-    cancelledByScroll.current = false;
-    setDrag(true);
-    setAnim("none");
-
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    fullPullPxRef.current = Math.max(40, rect.width * FULL_PULL_PCT);
-    lastBuzzAtRef.current = performance.now();
-    crossedRef.current = { left: false, right: false, reveal: false };
-
-    // ось поворота под пальцем
-    pivotYRef.current = clamp(((e.clientY - rect.top) / Math.max(1, rect.height)) * 100, 0, 100);
-
-    // --- LONG PRESS → SCRUB ---
-    const downX = e.clientX;
-    if (isActive) {
-      if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
-      holdTimer.current = window.setTimeout(() => {
-        const base = lastProgressRef.current;
-        const pct0 = clamp(Number.isFinite(base as number) ? (base as number) : 0, 0, 1);
-        scrubStart.current = { pct: pct0, x: downX, width: rect.width || 1 };
-        setScrubPct(pct0);
-        setScrubbing(true);
-        setLeftOpen(false);
-        setDx(0);
-        cancelledByScroll.current = true;
-        hapticImpact("light");
-      }, 300);
-    }
-  };
-
-  const onPointerCancel = () => {
-    if (frozen || chooseOpen) return;
-    if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
-    if (scrubbing) { setScrubbing(false); }
-    cancelledByScroll.current = true;
-    setDrag(false);
-    setAnim("snap");
-    crossedRef.current = { left: false, right: false, reveal: false };
-    setDx(leftOpen ? -LEFT_REVEAL : 0);
   };
 
   const onPointerUp = () => {
     if (frozen || chooseOpen) return;
-    if (!drag) return;
-    if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
-    if (scrubbing) {
-      setScrubbing(false);
-      setAnim("snap");
-      setDx(0);
-      setLeftOpen(false);
-      crossedRef.current = { left: false, right: false, reveal: false };
+    const swipe = swipeControllerRef.current;
+    const scrub = scrubControllerRef.current;
+    if (!swipe || !scrub) return;
+
+    const wasScrubbing = scrub.isScrubbing();
+    scrub.pointerUp();
+    if (wasScrubbing) {
       return;
     }
-    setDrag(false);
+    swipe.pointerUp({ leftOpen });
+  };
 
-    const abs = Math.abs(dx);
-    const wasTap = abs < 6 && !cancelledByScroll.current;
+  const onPointerCancel = () => {
+    const swipe = swipeControllerRef.current;
+    const scrub = scrubControllerRef.current;
+    if (!swipe || !scrub) return;
 
-    if (leftOpen && wasTap) {
-      commitDownload();
-      setAnim("snap"); setDx(0); setLeftOpen(false);
-      return;
-    }
-
-    if (wasTap) {
-      if (isActive) { setAnim("snap"); setDx(0); onToggle(); }
-      else { emitPlayTrack(t); setAnim("snap"); setDx(0); onToggle(); }
-      return;
-    }
-
-    const commitRemove = async () => {
-      setAnim("remove");
-      hapticImpact("heavy");
-      try {
-        if (mode === "playlist" && onRemoveFromPublic) {
-          await onRemoveFromPublic(t);             // серверное удаление
-        } else {
-          removeFromPlaylist(t.id);                // локальное
-        }
-        setToast("removed");
-      } catch {
-        setToast("error");
-      } finally {
-        setTimeout(() => {
-          setAnim("snap"); setDx(0); setLeftOpen(false);
-        }, 200);
-      }
-    };
-
-    if (dx >= TRIGGER_COMMIT) {
-      if (mode === "default") awaitMaybe(commitAdd)();
-      else commitDownload();
-      setAnim("snap"); setDx(0); setLeftOpen(false);
-      return;
-    }
-    if (dx <= -TRIGGER_COMMIT) {
-      if (mode === "playlist") { commitRemove(); return; }
-      else { commitDownload(); setAnim("snap"); setDx(0); setLeftOpen(false); return; }
-    }
-
-    if (dx < 0 && Math.abs(dx) >= LEFT_MIN_OPEN) {
-      setAnim("snap"); setDx(-LEFT_REVEAL); setLeftOpen(true);
-      return;
-    }
-
-    setAnim("snap"); setDx(0); setLeftOpen(false);
+    const wasScrubbing = scrub.isScrubbing();
+    scrub.cancel();
+    swipe.cancel({ leftOpen: wasScrubbing ? false : leftOpen });
   };
 
   const leftBgColor =
@@ -735,9 +753,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
             onToggle();
           }
           if (e.key === "Escape" && leftOpen) {
-            setAnim("snap");
-            setDx(0);
-            setLeftOpen(false);
+            settleState({ dx: 0, anim: "snap", leftOpen: false });
           }
         }}
         style={{
@@ -843,8 +859,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
           onClose={() => {
             setChooseOpen(false);
             setFrozen(false);
-            setAnim("snap");
-            setDx(0);
+            settleState({ dx: 0, anim: "snap", leftOpen: false });
           }}
           trackTitle={t.title}
           trackArtists={t.artists}

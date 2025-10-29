@@ -145,6 +145,13 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp = (x: number, min: number, max: number) =>
   Math.max(min, Math.min(max, x));
 
+// Секция с подсказками по жестам была убрана из дизайна, но нужно сохранить
+// тот же вертикальный отступ, чтобы блок с информацией о треке не "проседал".
+// 24px — это отступ gap-6 между контролами и подсказками.
+const DEFAULT_GESTURE_HINTS_SPACE = 96;
+const GESTURE_HINTS_GAP_PX = 24;
+const SHOW_GESTURE_HINTS = false; // можно быстро вернуть подсказки, поменяв на true
+
 function pickBackground(trackId: string | number | null | undefined) {
   const idStr = trackId == null ? "" : String(trackId);
   let hash = 0;
@@ -364,6 +371,45 @@ export default function ExpandedPlayerOverlay({
     offsetX: number;
     offsetY: number;
   }>({ mode: "none", offsetX: 0, offsetY: 0 });
+
+  const gestureHintsRef = useRef<HTMLDivElement | null>(null);
+  const [reservedGestureSpace, setReservedGestureSpace] = useState(
+    DEFAULT_GESTURE_HINTS_SPACE
+  );
+
+  useEffect(() => {
+    if (!SHOW_GESTURE_HINTS) return;
+    if (typeof window === "undefined") return;
+
+    const el = gestureHintsRef.current;
+    if (!el) return;
+
+    const updateSpace = () => {
+      setReservedGestureSpace(el.offsetHeight + GESTURE_HINTS_GAP_PX);
+    };
+
+    updateSpace();
+
+    let rafId: number | null = null;
+    const scheduleUpdate = () => {
+      if (rafId != null) cancelAnimationFrame(rafId);
+      rafId = window.requestAnimationFrame(updateSpace);
+    };
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(scheduleUpdate);
+      observer.observe(el);
+    }
+
+    window.addEventListener("resize", scheduleUpdate);
+
+    return () => {
+      if (rafId != null) cancelAnimationFrame(rafId);
+      observer?.disconnect();
+      window.removeEventListener("resize", scheduleUpdate);
+    };
+  }, []);
 
   // инфа о текущем жесте
   const gestureRef = useRef<{
@@ -639,148 +685,159 @@ export default function ExpandedPlayerOverlay({
                   paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + ${GESTURE_HINTS_SPACE}px)`,
                 }}
               >
-                {/* трек-инфо */}
-                <div className="text-center space-y-2">
-                  <div className="text-sm text-white/70">
-                    {track?.artists?.length
-                      ? track.artists.join(" · ")
-                      : "Неизвестный артист"}
-                  </div>
-                  <div className="text-2xl font-semibold text-white leading-tight">
-                    {track?.title || "Без названия"}
-                  </div>
-                  {track?.hashtags?.length ? (
-                    <div className="text-xs text-white/60">
-                      {track.hashtags.join("  •  ")}
+                <div
+                  className="flex w-full flex-col items-center gap-6"
+                  style={
+                    SHOW_GESTURE_HINTS
+                      ? undefined
+                      : { marginBottom: reservedGestureSpace }
+                  }
+                >
+                  {/* трек-инфо */}
+                  <div className="text-center space-y-2">
+                    <div className="text-sm text-white/70">
+                      {track?.artists?.length
+                        ? track.artists.join(" · ")
+                        : "Неизвестный артист"}
                     </div>
-                  ) : null}
-                </div>
-
-                {/* таймлайн + тайминги */}
-                <div
-                  className="w-full max-w-[520px]"
-                  data-expanded-gesture="lock"
-                >
-                  <ElasticSlider
-                    value={playbackProgress * 100}
-                    startingValue={0}
-                    maxValue={100}
-                    leftIcon={<></>}
-                    rightIcon={<></>}
-                    onChange={(v) => handleSeek(v / 100)}
-                    onChangeEnd={(v) => handleSeek(v / 100)}
-                  />
-                  <div className="flex justify-between text-[12px] text-white/70 mt-1 tabular-nums">
-                    <span>{fmtTime(current)}</span>
-                    <span>-{fmtTime(Math.max(0, duration - current))}</span>
+                    <div className="text-2xl font-semibold text-white leading-tight">
+                      {track?.title || "Без названия"}
+                    </div>
+                    {track?.hashtags?.length ? (
+                      <div className="text-xs text-white/60">
+                        {track.hashtags.join("  •  ")}
+                      </div>
+                    ) : null}
                   </div>
-                </div>
 
-                {/* блок кнопок управления */}
-                <div
-                  className="flex items-center justify-center gap-6"
-                  data-expanded-gesture="lock"
-                >
-                  {/* Shuffle */}
-                  <RoundGlassButton
-                    size={36}
-                    ariaLabel={
-                      shuffle
-                        ? "Перемешивание: включено"
-                        : "Перемешивание: выключено"
-                    }
-                    title="Перемешать"
-                    onClick={() => onToggleShuffle?.(!shuffle)}
+                  {/* таймлайн + тайминги */}
+                  <div
+                    className="w-full max-w-[520px]"
+                    data-expanded-gesture="lock"
                   >
-                    <div
-                      className={
+                    <ElasticSlider
+                      value={playbackProgress * 100}
+                      startingValue={0}
+                      maxValue={100}
+                      onChange={(v) => handleSeek(v / 100)}
+                      onChangeEnd={(v) => handleSeek(v / 100)}
+                    />
+                    <div className="mt-1 flex justify-between text-[12px] text-white/70 tabular-nums">
+                      <span>{fmtTime(current)}</span>
+                      <span>-{fmtTime(Math.max(0, duration - current))}</span>
+                    </div>
+                  </div>
+
+                  {/* блок кнопок управления */}
+                  <div
+                    className="w-full max-w-[520px] flex items-center justify-between gap-6"
+                    data-expanded-gesture="lock"
+                  >
+                    {/* Shuffle */}
+                    <RoundGlassButton
+                      size={36}
+                      ariaLabel={
                         shuffle
-                          ? "text-[#51a2ff]"
-                          : "text-white/70"
+                          ? "Перемешивание: включено"
+                          : "Перемешивание: выключено"
                       }
+                      title="Перемешать"
+                      onClick={() => onToggleShuffle?.(!shuffle)}
                     >
-                      <IconShuffle />
-                    </div>
-                  </RoundGlassButton>
-
-                  {/* Previous */}
-                  <RoundGlassButton
-                    ariaLabel="Предыдущий трек"
-                    title="Предыдущий"
-                    disabled={!track}
-                    onClick={onPrev}
-                  >
-                    <IconPrevNew />
-                  </RoundGlassButton>
-
-                  {/* Play/Pause */}
-                  <RoundGlassButton
-                    size={72}
-                    ariaLabel={paused ? "Воспроизвести" : "Пауза"}
-                    title={paused ? "Воспроизвести" : "Пауза"}
-                    disabled={!track}
-                    onClick={onTogglePlayPause}
-                  >
-                    {paused ? <IconPlay size={36} /> : <IconPause size={36} />}
-                  </RoundGlassButton>
-
-                  {/* Next */}
-                  <RoundGlassButton
-                    ariaLabel="Следующий трек"
-                    title="Следующий"
-                    disabled={!track}
-                    onClick={onNext}
-                  >
-                    <IconNextNew />
-                  </RoundGlassButton>
-
-                  {/* Add to playlist */}
-                  <RoundGlassButton
-                    id="ogma-player-add-btn-expanded"
-                    size={36}
-                    ariaLabel="Добавить трек в плейлист"
-                    title="Добавить в плейлист"
-                    disabled={!track}
-                    onClick={() => {
-                      if (!track) return;
-                      if (onAddToPlaylist) {
-                        onAddToPlaylist(track);
-                      } else {
-                        try {
-                          window.dispatchEvent(
-                            new CustomEvent("ogma:add-to-playlist", {
-                              detail: { track, source: "expanded" },
-                            })
-                          );
-                        } catch {
-                          // no-op
+                      <div
+                        className={
+                          shuffle
+                            ? "text-[#51a2ff]"
+                            : "text-white/70"
                         }
-                      }
-                    }}
-                  >
-                    <IconAdd />
-                  </RoundGlassButton>
+                      >
+                        <IconShuffle />
+                      </div>
+                    </RoundGlassButton>
+
+                    {/* Previous */}
+                    <RoundGlassButton
+                      ariaLabel="Предыдущий трек"
+                      title="Предыдущий"
+                      disabled={!track}
+                      onClick={onPrev}
+                    >
+                      <IconPrevNew />
+                    </RoundGlassButton>
+
+                    {/* Play/Pause */}
+                    <RoundGlassButton
+                      size={72}
+                      ariaLabel={paused ? "Воспроизвести" : "Пауза"}
+                      title={paused ? "Воспроизвести" : "Пауза"}
+                      disabled={!track}
+                      onClick={onTogglePlayPause}
+                    >
+                      {paused ? <IconPlay size={36} /> : <IconPause size={36} />}
+                    </RoundGlassButton>
+
+                    {/* Next */}
+                    <RoundGlassButton
+                      ariaLabel="Следующий трек"
+                      title="Следующий"
+                      disabled={!track}
+                      onClick={onNext}
+                    >
+                      <IconNextNew />
+                    </RoundGlassButton>
+
+                    {/* Add to playlist */}
+                    <RoundGlassButton
+                      id="ogma-player-add-btn-expanded"
+                      size={36}
+                      ariaLabel="Добавить трек в плейлист"
+                      title="Добавить в плейлист"
+                      disabled={!track}
+                      onClick={() => {
+                        if (!track) return;
+                        if (onAddToPlaylist) {
+                          onAddToPlaylist(track);
+                        } else {
+                          try {
+                            window.dispatchEvent(
+                              new CustomEvent("ogma:add-to-playlist", {
+                                detail: { track, source: "expanded" },
+                              })
+                            );
+                          } catch {
+                            // no-op
+                          }
+                        }
+                      }}
+                    >
+                      <IconAdd />
+                    </RoundGlassButton>
+                  </div>
                 </div>
 
-                {/* подсказки по жестам
-                <GlassSurface
-                  className="w-full max-w-[480px] bg-white/8 border-white/15 text-white/80 text-sm px-4 py-3 rounded-2xl"
-                  data-expanded-gesture="lock"
-                >
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="flex-1">
-                      <div className="text-xs uppercase tracking-[0.2em] text-white/60">
-                        Очередь
+                {SHOW_GESTURE_HINTS ? (
+                  <div
+                    ref={gestureHintsRef}
+                    className="w-full max-w-[480px]"
+                    data-expanded-gesture="lock"
+                  >
+                    <GlassSurface className="bg-white/8 border-white/15 text-white/80 text-sm px-4 py-3 rounded-2xl">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex-1">
+                          <div className="text-xs uppercase tracking-[0.2em] text-white/60">
+                            Очередь
+                          </div>
+                          <div className="text-sm font-medium text-white/90">
+                            Свайпните влево/вправо, чтобы переключить трек
+                          </div>
+                        </div>
+                        <div className="text-xs text-white/60">
+                          Свайп вниз — закрыть
+                        </div>
                       </div>
-                      <div className="text-sm font-medium text-white/90">
-                        Свайпните влево/вправо, чтобы переключить трек
-                      </div>
-                    </div>
-                    <div className="text-xs text-white/60">
-                      Свайп вниз — закрыть
-                    </div>
+                    </GlassSurface>
                   </div>
-                </GlassSurface> */}
+                ) : null}
               </div>
             </div>
           </div>

@@ -705,8 +705,6 @@ export default function GlobalAudioPlayer({
                           value={(progress || 0) * 100}
                           startingValue={0}
                           maxValue={100}
-                          leftIcon={<></>}
-                          rightIcon={<></>}
                           className="w-full"
                           onChangeStart={() => { }}
                           onChange={(v) => seekTo(v / 100)}

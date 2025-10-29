@@ -1241,7 +1241,8 @@ class App {
   }
 }
 
-const Hyperspeed: FC<HyperspeedProps> = ({ effectOptions = {} }) => {
+const Hyperspeed: FC<HyperspeedProps> = (props) => {
+  const { effectOptions = {} } = props ?? {};
   const mergedOptions = useMemo<HyperspeedOptions>(
     () => ({ ...defaultOptions, ...(effectOptions || {}) }),
     [JSON.stringify(effectOptions || {})]

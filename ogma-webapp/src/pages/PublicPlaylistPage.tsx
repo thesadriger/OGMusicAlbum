@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Track } from "@/types/types";
 import { TrackCard } from "@/components/TrackCard";
+import AnimatedList from "@/components/AnimatedList";
 import EditPlaylistModal from "@/components/EditPlaylistModal";
 import {
   getPublicPlaylistByHandle,
@@ -269,93 +270,98 @@ export default function PublicPlaylistPage({
       {!loading && filtered.length === 0 && <div className="text-sm text-zinc-500">Пусто.</div>}
 
       {!loading && filtered.length > 0 && (
-        <div className="space-y-3">
-          {filtered.map((t, i) => (
-            <TrackCard
-              key={t.id}
-              t={t}
-              isActive={nowId === t.id}
-              isPaused={paused}
-              onToggle={() => onToggleTrack(playbackList, i)}
-              mode="playlist"
-              onRequestExpand={onRequestExpand}
-              hideDuringExpand={expandedTrackId === t.id}
-              onCardElementChange={onCardElementChange}
-              onRemoveFromPublic={async (track) => {
-                await removeItemFromPublicPlaylistByHandle(handle, track);
-                let removed = false;
-                setItems((prev) => {
-                  const next = prev.filter((x) => {
-                    if (!x) return true;
-                    if (x.id && track.id && String(x.id) === String(track.id)) {
-                      return false;
-                    }
-                    const xMsg = (x as any).msgId ?? (x as any).msg_id ?? null;
-                    const tMsg = (track as any).msgId ?? (track as any).msg_id ?? null;
-                    if (xMsg != null && tMsg != null) {
-                      const xChat = (x as any).chat ?? (x as any).chat_username ?? (x as any).chatUsername ?? "";
-                      const tChat = (track as any).chat ?? (track as any).chat_username ?? (track as any).chatUsername ?? "";
-                      const cleanX = String(xChat).replace(/^@/, "").toLowerCase();
-                      const cleanT = String(tChat).replace(/^@/, "").toLowerCase();
-                      if (Number(xMsg) === Number(tMsg)) {
-                        if (!cleanX || !cleanT || cleanX === cleanT) {
-                          return false;
+        <AnimatedList
+          items={filtered.map((t, i) => ({
+            key: t.id,
+            content: (
+              <TrackCard
+                t={t}
+                isActive={nowId === t.id}
+                isPaused={paused}
+                onToggle={() => onToggleTrack(playbackList, i)}
+                mode="playlist"
+                onRequestExpand={onRequestExpand}
+                hideDuringExpand={expandedTrackId === t.id}
+                onCardElementChange={onCardElementChange}
+                onRemoveFromPublic={async (track) => {
+                  await removeItemFromPublicPlaylistByHandle(handle, track);
+                  let removed = false;
+                  setItems((prev) => {
+                    const next = prev.filter((x) => {
+                      if (!x) return true;
+                      if (x.id && track.id && String(x.id) === String(track.id)) {
+                        return false;
+                      }
+                      const xMsg = (x as any).msgId ?? (x as any).msg_id ?? null;
+                      const tMsg = (track as any).msgId ?? (track as any).msg_id ?? null;
+                      if (xMsg != null && tMsg != null) {
+                        const xChat = (x as any).chat ?? (x as any).chat_username ?? (x as any).chatUsername ?? "";
+                        const tChat = (track as any).chat ?? (track as any).chat_username ?? (track as any).chatUsername ?? "";
+                        const cleanX = String(xChat).replace(/^@/, "").toLowerCase();
+                        const cleanT = String(tChat).replace(/^@/, "").toLowerCase();
+                        if (Number(xMsg) === Number(tMsg)) {
+                          if (!cleanX || !cleanT || cleanX === cleanT) {
+                            return false;
+                          }
                         }
                       }
-                    }
-                    return true;
+                      return true;
+                    });
+                    removed = removed || next.length !== prev.length;
+                    return next;
                   });
-                  removed = removed || next.length !== prev.length;
-                  return next;
-                });
-                if (removed) {
-                  setInfo((prev: any) => {
-                    if (!prev) return prev;
-                    const base =
-                      typeof prev.item_count === "number"
-                        ? prev.item_count
-                        : Array.isArray(prev.items)
-                          ? prev.items.length
-                          : 0;
-                    return { ...prev, item_count: Math.max(0, base - 1) };
-                  });
-                }
-                if (typeof window !== "undefined") {
-                  const token =
-                    typeof (globalThis as any).crypto?.randomUUID === "function"
-                      ? (globalThis as any).crypto.randomUUID()
-                      : `pl-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-                  lastPlaylistEventTokenRef.current = token;
-                  let detailTrack: any;
-                  try {
-                    if (typeof (globalThis as any).structuredClone === "function") {
-                      detailTrack = (globalThis as any).structuredClone(track);
-                    } else {
-                      detailTrack = JSON.parse(JSON.stringify(track));
-                    }
-                  } catch {
-                    detailTrack = { ...track };
+                  if (removed) {
+                    setInfo((prev: any) => {
+                      if (!prev) return prev;
+                      const base =
+                        typeof prev.item_count === "number"
+                          ? prev.item_count
+                          : Array.isArray(prev.items)
+                            ? prev.items.length
+                            : 0;
+                      return { ...prev, item_count: Math.max(0, base - 1) };
+                    });
                   }
-                  const playlistIdStr = info?.id ? String(info.id) : null;
-                  const cleanHandle = (info?.handle ?? handle ?? "")
-                    .toString()
-                    .replace(/^@/, "");
-                  window.dispatchEvent(
-                    new CustomEvent("ogma:public-playlist-item-removed", {
-                      detail: {
-                        playlistId: playlistIdStr,
-                        handle: cleanHandle || normalizedRouteHandle,
-                        playlistTitle: info?.title ?? null,
-                        track: detailTrack,
-                        token,
-                      },
-                    })
-                  );
-                }
-              }}
-            />
-          ))}
-        </div>
+                  if (typeof window !== "undefined") {
+                    const token =
+                      typeof (globalThis as any).crypto?.randomUUID === "function"
+                        ? (globalThis as any).crypto.randomUUID()
+                        : `pl-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                    lastPlaylistEventTokenRef.current = token;
+                    let detailTrack: any;
+                    try {
+                      if (typeof (globalThis as any).structuredClone === "function") {
+                        detailTrack = (globalThis as any).structuredClone(track);
+                      } else {
+                        detailTrack = JSON.parse(JSON.stringify(track));
+                      }
+                    } catch {
+                      detailTrack = { ...track };
+                    }
+                    const playlistIdStr = info?.id ? String(info.id) : null;
+                    const cleanHandle = (info?.handle ?? handle ?? "")
+                      .toString()
+                      .replace(/^@/, "");
+                    window.dispatchEvent(
+                      new CustomEvent("ogma:public-playlist-item-removed", {
+                        detail: {
+                          playlistId: playlistIdStr,
+                          handle: cleanHandle || normalizedRouteHandle,
+                          playlistTitle: info?.title ?? null,
+                          track: detailTrack,
+                          token,
+                        },
+                      })
+                    );
+                  }
+                }}
+              />
+            ),
+          }))}
+          listClassName="space-y-3"
+          scrollable={false}
+          showGradients={false}
+        />
       )}
 
       <div className="pt-3 text-xs text-zinc-500 border-t border-zinc-200/60 dark:border-zinc-800/60">

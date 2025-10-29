@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Track } from "@/types/types";
 import { TrackCard } from "@/components/TrackCard";
+import AnimatedList from "@/components/AnimatedList";
 import { getPlaylist } from "@/lib/playlists";
 import { useContentFilter, filterTracksUniqueByTitle } from "@/hooks/useContentFilter";
 
@@ -172,44 +173,52 @@ export default function PlaylistPage({
           )}
 
           {tracksOfPicked.length > 0 && (
-            <div className={listClass}>
-              {tracksOfPicked.map((t, i) => (
-                <TrackCard
-                  key={t.id}
-                  t={t}
-                  isActive={nowId === t.id}
-                  isPaused={paused}
-                  onToggle={() =>
-                    onToggleTrack(tracksOfPicked, i, t.id)
-                  }
-                  mode="playlist"
-                  onRequestExpand={onRequestExpand}
-                  hideDuringExpand={expandedTrackId === t.id}
-                  onCardElementChange={onCardElementChange}
-                />
-              ))}
-            </div>
+            <AnimatedList
+              items={tracksOfPicked.map((t, i) => ({
+                key: t.id,
+                content: (
+                  <TrackCard
+                    t={t}
+                    isActive={nowId === t.id}
+                    isPaused={paused}
+                    onToggle={() => onToggleTrack(tracksOfPicked, i, t.id)}
+                    mode="playlist"
+                    onRequestExpand={onRequestExpand}
+                    hideDuringExpand={expandedTrackId === t.id}
+                    onCardElementChange={onCardElementChange}
+                  />
+                ),
+              }))}
+              listClassName={listClass}
+              scrollable={false}
+              showGradients={false}
+            />
           )}
         </div>
       )}
 
       {/* ===== ОБЫЧНЫЙ СПИСОК ТРЕКОВ ПЛЕЙЛИСТА ===== */}
       {!pickedArtist && !loading && filtered.length > 0 && (
-        <div className={listClass}>
-          {filtered.map((t, i) => (
-            <TrackCard
-              key={t.id}
-              t={t}
-              isActive={nowId === t.id}
-              isPaused={paused}
-              onToggle={() => onToggleTrack(filtered, i, t.id)}
-              mode="playlist"
-              onRequestExpand={onRequestExpand}
-              hideDuringExpand={expandedTrackId === t.id}
-              onCardElementChange={onCardElementChange}
-            />
-          ))}
-        </div>
+        <AnimatedList
+          items={filtered.map((t, i) => ({
+            key: t.id,
+            content: (
+              <TrackCard
+                t={t}
+                isActive={nowId === t.id}
+                isPaused={paused}
+                onToggle={() => onToggleTrack(filtered, i, t.id)}
+                mode="playlist"
+                onRequestExpand={onRequestExpand}
+                hideDuringExpand={expandedTrackId === t.id}
+                onCardElementChange={onCardElementChange}
+              />
+            ),
+          }))}
+          listClassName={listClass}
+          scrollable={false}
+          showGradients={false}
+        />
       )}
     </section>
   );

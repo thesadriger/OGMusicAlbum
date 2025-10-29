@@ -51,12 +51,16 @@ export default function App() {
   const { me } = useMe();
   const rawName = (me?.name || me?.username || "").trim();
   const ownerLabel = (rawName.split(/\s+/)[0] || "").trim();
+<<<<<<< HEAD
   const playlistTitle = ownerLabel ? `${ownerLabel} MusicAlbum` : "MusicAlbum";
   const [titleAnimated, setTitleAnimated] = useState(false);
 
   useEffect(() => {
     setTitleAnimated(false);
   }, [playlistTitle]);
+=======
+  const playlistTitle = ownerLabel ? `${ownerLabel}'s MusicAlbum` : "MusicAlbum";
+>>>>>>> 3b7208a (добавил апостроф)
 
   const [recs, setRecs] = useState<Track[]>([]);
   const recsShuffled = useMemo(() => {

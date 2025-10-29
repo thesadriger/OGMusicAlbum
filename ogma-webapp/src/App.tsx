@@ -60,7 +60,7 @@ export default function App() {
   const { me } = useMe();
   const rawName = (me?.name || me?.username || "").trim();
   const ownerLabel = (rawName.split(/\s+/)[0] || "").trim();
-  const playlistTitle = ownerLabel ? `${ownerLabel}'s MusicAlbum` : "MusicAlbum";
+  const playlistTitle = ownerLabel ? `${ownerLabel}'s Album` : "Album";
 
 
   const [recs, setRecs] = useState<Track[]>([]);
@@ -514,7 +514,7 @@ export default function App() {
 
   return (
     <AuthGate>
-      <div className="min-h-screen pb-28 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
+      <div className="no-select min-h-screen pb-28 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
         <div
           className={
             "max-w-3xl mx-auto " +
@@ -697,6 +697,7 @@ export default function App() {
           shuffle={shuffle}
           onToggleShuffle={(v) => setShuffle(v)}
           onAddToPlaylist={(t) => openAddPopover(t, "plus")}
+          isExpanded={shouldShowOverlay}
         />
       </div>
 

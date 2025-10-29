@@ -7,6 +7,16 @@ import { goArtist, goPlaylist, goPlaylistHandle } from "@/lib/router";
 import GlassSurface from "@/components/GlassSurface";
 import { inPlaylist } from "@/lib/playlists";
 
+import RoundGlassButton from "@/components/RoundGlassButton";
+import {
+  IconPlay,
+  IconPause,
+  IconNextNew,
+  IconPrevNew,
+  IconAdd,
+  IconShuffle,
+} from "@/components/PlayerIcons";
+
 /** Что за плейлист был последним, куда добавили текущий трек */
 type LastAdded =
   | { type: "local" }
@@ -34,6 +44,9 @@ type Props = {
   // перемешивание
   shuffle?: boolean;
   onToggleShuffle?: (enabled: boolean) => void;
+
+  /** полноэкранный плеер сейчас открыт? */
+  isExpanded?: boolean;
 
   /** жестовое раскрытие в полноэкранный плеер */
   onRequestExpand?: (track: Track, originRect: DOMRect) => void;
@@ -141,66 +154,6 @@ function waitForCanPlay(a: HTMLAudioElement, timeoutMs = 6000) {
   });
 }
 
-// --- Иконки ---
-const IconPlay = ({ size = 26 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
-    <path d="M8 5.5v13a1 1 0 001.5.9l9.5-6.5a1 1 0 000-1.7L9.5 4.7A1 1 0 008 5.5z" fill="currentColor" />
-  </svg>
-);
-const IconPause = ({ size = 26 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
-    <rect x="6.5" y="4.8" width="3.4" height="14.4" rx="1.2" fill="currentColor" />
-    <rect x="14.1" y="4.8" width="3.4" height="14.4" rx="1.2" fill="currentColor" />
-  </svg>
-);
-const IconNextNew = ({ size = 24 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
-    <path
-      d="M15.3371,12.4218 L5.76844,18.511 C5.43558,18.7228 5,18.4837 5,18.0892 L5,5.91084 C5,5.51629 5.43558,5.27718 5.76844,5.48901 L15.3371,11.5782 C15.6459,11.7746 15.6459,12.2254 15.3371,12.4218 Z"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-    />
-    <line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-  </svg>
-);
-const IconPrevNew = ({ size = 24 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
-    <g transform="translate(24,0) scale(-1,1)">
-      <path
-        d="M15.3371,12.4218 L5.76844,18.511 C5.43558,18.7228 5,18.4837 5,18.0892 L5,5.91084 C5,5.51629 5.43558,5.27718 5.76844,5.48901 L15.3371,11.5782 C15.6459,11.7746 15.6459,12.2254 15.3371,12.4218 Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-      <line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </g>
-  </svg>
-);
-const IconAdd = ({ size = 24 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
-    <path d="M12 4a1 1 0 0 1 1 1v6h6a1 1 0 1 1 0 2h-6v6a1 1 0 1 1-2 0v-6H5a1 1 0 1 1 0-2h6V5a1 1 0 0 1 1-1z" fill="currentColor" />
-  </svg>
-);
-const IconShuffle = ({ size = 22 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 512 512" aria-hidden>
-    <path d="M21.333,149.327H64c18.773,0,37.227,4.928,53.333,14.272c3.371,1.963,7.061,2.88,10.688,2.88
-      c7.36,0,14.528-3.819,18.475-10.624c5.931-10.197,2.432-23.253-7.744-29.163C116.117,113.594,90.283,106.66,64,106.66H21.333
-      C9.536,106.66,0,116.218,0,127.994S9.536,149.327,21.333,149.327z" fill="currentColor" />
-    <path d="M320,149.327h42.667v64c0,8.192,4.715,15.68,12.075,19.221c2.965,1.408,6.123,2.112,9.259,2.112
-      c4.757,0,9.472-1.6,13.333-4.672L504,144.655c5.056-4.053,8-10.176,8-16.661c0-6.485-2.944-12.608-8-16.661L397.333,25.999
-      c-6.421-5.12-15.232-6.101-22.592-2.56s-12.075,11.029-12.075,19.221v64H320c-82.325,0-149.333,66.987-149.333,149.333
-      c0,58.816-47.851,106.667-106.667,106.667H21.333C9.536,362.66,0,372.218,0,383.994s9.536,21.333,21.333,21.333H64
-      c82.325,0,149.333-66.987,149.333-149.333C213.333,197.178,261.184,149.327,320,149.327z" fill="currentColor" />
-    <path d="M504,367.336l-106.667-85.333c-6.421-5.141-15.232-6.123-22.592-2.581c-7.36,3.563-12.075,11.029-12.075,19.243v64H320
-      c-21.077,0-41.472-6.144-58.965-17.771c-9.856-6.485-23.061-3.861-29.568,5.973c-6.528,9.813-3.861,23.061,5.952,29.568
-      c24.512,16.277,53.056,24.896,82.581,24.896h42.667v64c0,8.192,4.715,15.68,12.075,19.221c2.965,1.408,6.123,2.112,9.259,2.112
-      c4.757,0,9.472-1.6,13.333-4.672L504,400.659c5.056-4.053,8-10.197,8-16.661C512,377.512,509.056,371.368,504,367.336z"
-      fill="currentColor" />
-  </svg>
-);
 
 // формат М:СС
 const fmt = (s: number) => {
@@ -210,120 +163,6 @@ const fmt = (s: number) => {
   return `${m}:${sec}`;
 };
 
-// ── RoundGlassButton: мягкая анимация нажатия ────────────────────────────────
-function usePrefersReducedMotion() {
-  const [prefers, setPrefers] = React.useState(false);
-  React.useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = (e: MediaQueryListEvent) => setPrefers(e.matches);
-    setPrefers(mq.matches);
-    mq.addEventListener?.("change", onChange);
-    return () => mq.removeEventListener?.("change", onChange);
-  }, []);
-  return prefers;
-}
-
-/** Кнопка с мягкой «стеклянной» интеракцией */
-function RoundGlassButton({
-  id,
-  size = 48,
-  disabled,
-  ariaLabel,
-  title,
-  onClick,
-  onPointerDown,
-  children,
-}: {
-  id?: string;
-  size?: number;
-  disabled?: boolean;
-  ariaLabel: string;
-  title?: string;
-  onClick?: () => void;
-  onPointerDown?: (e: React.PointerEvent<HTMLButtonElement>) => void;
-  children: React.ReactNode;
-}) {
-  const reduced = usePrefersReducedMotion();
-  const btnRef = React.useRef<HTMLButtonElement>(null);
-
-  const pressIn = React.useCallback(() => {
-    const el = btnRef.current;
-    if (!el) return;
-    if (reduced || !el.animate) {
-      el.style.transition = "transform 120ms cubic-bezier(.2,.8,.2,1)";
-      el.style.transform = "scale(0.96)";
-      return;
-    }
-    el.animate(
-      [{ transform: "scale(1)" }, { transform: "scale(0.96)" }],
-      { duration: 130, easing: "cubic-bezier(.2,.8,.2,1)", fill: "forwards" }
-    );
-  }, [reduced]);
-
-  const release = React.useCallback(() => {
-    const el = btnRef.current;
-    if (!el) return;
-    if (reduced || !el.animate) {
-      el.style.transform = "scale(1)";
-      return;
-    }
-    el.animate(
-      [
-        { transform: "scale(0.96)" },
-        { transform: "scale(1.06)" },
-        { transform: "scale(1)" },
-      ],
-      { duration: 220, easing: "cubic-bezier(.2,.8,.2,1)", fill: "forwards" }
-    );
-  }, [reduced]);
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (e.key === " " || e.key === "Enter") pressIn();
-  };
-  const onKeyUp = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (e.key === " " || e.key === "Enter") release();
-  };
-
-  return (
-    <GlassSurface
-      width={size}
-      height={size}
-      borderRadius={9999}
-      backgroundOpacity={0.22}
-      saturation={1.8}
-      className="shrink-0"
-    >
-      <button
-        id={id}
-        ref={btnRef}
-        type="button"
-        aria-label={ariaLabel}
-        title={title}
-        disabled={disabled}
-        onClick={onClick}
-        onPointerDown={(e) => {
-          pressIn();
-          onPointerDown?.(e);
-        }}
-        onPointerUp={release}
-        onPointerCancel={release}
-        onPointerLeave={release}
-        onBlur={release}
-        onKeyDown={onKeyDown}
-        onKeyUp={onKeyUp}
-        className="w-full h-full grid place-items-center rounded-full
-                   text-white/90 hover:text-white
-                   disabled:opacity-40 disabled:pointer-events-none
-                   outline-none focus-visible:ring-2 focus-visible:ring-white/40
-                   will-change-transform select-none bg-transparent"
-        style={{ transition: reduced ? undefined : "transform 180ms cubic-bezier(.2,.8,.2,1)" }}
-      >
-        {children}
-      </button>
-    </GlassSurface>
-  );
-}
 
 export default function GlobalAudioPlayer({
   now,
@@ -338,6 +177,7 @@ export default function GlobalAudioPlayer({
   onAddToPlaylist,
   shuffle = false,
   onToggleShuffle,
+  isExpanded = false,
   onRequestExpand,
 }: Props) {
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
@@ -763,13 +603,23 @@ export default function GlobalAudioPlayer({
     <>
       {/* ==== PLAYER + КНОПКИ (две строки) ==== */}
       <div
-        className="fixed left-0 right-0 z-[70] pointer-events-none"
+        className={
+          "fixed left-0 right-0 z-[70] pointer-events-none transition-opacity duration-200 " +
+          (isExpanded ? "opacity-0" : "opacity-100")
+        }
         style={{
           bottom: `calc(env(safe-area-inset-bottom, 0px) + ${BOTTOM_GAP}px)`,
           paddingBottom: "12px",
         }}
+        aria-hidden={isExpanded ? true : false}
       >
-        <div className="w-full px-2 sm:px-4 pt-2 flex justify-center pointer-events-auto touch-pan-y">
+        <div
+          className={
+            "w-full px-2 sm:px-4 pt-2 flex justify-center touch-pan-y " +
+            // если развёрнут fullscreen, то ивенты вниз не должны ловиться мини-плеером
+            (isExpanded ? "pointer-events-none" : "pointer-events-auto")
+          }
+        >
           <div className="w-full max-w-[940px] flex flex-col items-center gap-2">
             {/* 1-я строка: плеер (инфо + таймлайн) */}
             <div
@@ -792,99 +642,99 @@ export default function GlobalAudioPlayer({
                 className="w-full text-white"
               >
                 <div className="mx-auto w-full max-w-[640px] px-4 sm:px-5 py-3 sm:py-3.5 flex flex-col gap-3">
-                {/* Заголовок/Артист слева + кнопка «Артист» справа */}
-                <div className="w-full flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 text-left">
-                    <div className="text-[15px] leading-tight font-medium truncate flex items-center gap-2">
-                      <span className="truncate">{now?.title ?? ""}</span>
+                  {/* Заголовок/Артист слева + кнопка «Артист» справа */}
+                  <div className="w-full flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1 text-left">
+                      <div className="text-[15px] leading-tight font-medium truncate flex items-center gap-2">
+                        <span className="truncate">{now?.title ?? ""}</span>
 
-                      {/* Плашка «Добавлено». Появляется только для текущего трека. Кликабельна. */}
-                      {showAdded && (
-                        <button
-                          type="button"
-                          onClick={openAddedPlaylist}
-                          className="shrink-0 px-2 py-0.5 rounded-md text-[11px]
+                        {/* Плашка «Добавлено». Появляется только для текущего трека. Кликабельна. */}
+                        {showAdded && (
+                          <button
+                            type="button"
+                            onClick={openAddedPlaylist}
+                            className="shrink-0 px-2 py-0.5 rounded-md text-[11px]
                                      bg-emerald-500/20 text-emerald-50 border border-emerald-400/30
                                      hover:bg-emerald-500/25 active:bg-emerald-500/30
                                      focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40"
-                          aria-label="Открыть плейлист"
-                          title={
-                            lastAdded?.type === "server"
-                              ? `Открыть плейлист ${lastAdded?.handle || lastAdded?.title || "плейлист"}`
-                              : "Открыть плейлист"
-                          }
-                        >
-                          В плейлисте
-                        </button>
-                      )}
+                            aria-label="Открыть плейлист"
+                            title={
+                              lastAdded?.type === "server"
+                                ? `Открыть плейлист ${lastAdded?.handle || lastAdded?.title || "плейлист"}`
+                                : "Открыть плейлист"
+                            }
+                          >
+                            В плейлисте
+                          </button>
+                        )}
+                      </div>
+                      <div className="text-[13px] leading-tight text-zinc-300 truncate">
+                        {(now?.artists ?? []).join(", ")}
+                      </div>
                     </div>
-                    <div className="text-[13px] leading-tight text-zinc-300 truncate">
-                      {(now?.artists ?? []).join(", ")}
-                    </div>
-                  </div>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // все артисты трека → чтобы показать чипы на странице артиста
-                      const artists = (now?.artists || []).map(a => a.trim()).filter(Boolean);
-                      const primary = artists[0];
-                      if (!primary) return;
-                      // прокидываем «пиров» через глобальную переменную (мягкий и локальный способ)
-                      try { (window as any).__ogmaArtistPeers = artists; } catch { }
-                      goArtist(primary);
-                    }}
-                    disabled={!now?.artists?.[0]}
-                    className="shrink-0 px-3 py-1.5 rounded-lg text-xs
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // все артисты трека → чтобы показать чипы на странице артиста
+                        const artists = (now?.artists || []).map(a => a.trim()).filter(Boolean);
+                        const primary = artists[0];
+                        if (!primary) return;
+                        // прокидываем «пиров» через глобальную переменную (мягкий и локальный способ)
+                        try { (window as any).__ogmaArtistPeers = artists; } catch { }
+                        goArtist(primary);
+                      }}
+                      disabled={!now?.artists?.[0]}
+                      className="shrink-0 px-3 py-1.5 rounded-lg text-xs
              bg-white/10 hover:bg-white/15 active:bg-white/20
              border border-white/15 text-white/90
              disabled:opacity-40 disabled:pointer-events-none"
-                  >
-                    Артист
-                  </button>
-                </div>
+                    >
+                      Артист
+                    </button>
+                  </div>
 
-                {/* Таймлайн */}
-                <div className="w-full">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 text-[12px] tabular-nums opacity-90">
-                      {fmt(currentSec)}
-                    </div>
-                    <div className="flex-1" data-player-interactive>
-                      <ElasticSlider
-                        value={(progress || 0) * 100}
-                        startingValue={0}
-                        maxValue={100}
-                        leftIcon={<></>}
-                        rightIcon={<></>}
-                        className="w-full"
-                        onChangeStart={() => { }}
-                        onChange={(v) => seekTo(v / 100)}
-                        onChangeEnd={(v) => seekTo(v / 100)}
-                      />
-                    </div>
-                    <div className="w-12 text-[12px] tabular-nums text-right opacity-70">
-                      -{fmt(Math.max(0, (duration || 0) - currentSec))}
+                  {/* Таймлайн */}
+                  <div className="w-full">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 text-[12px] tabular-nums opacity-90">
+                        {fmt(currentSec)}
+                      </div>
+                      <div className="flex-1" data-player-interactive>
+                        <ElasticSlider
+                          value={(progress || 0) * 100}
+                          startingValue={0}
+                          maxValue={100}
+                          leftIcon={<></>}
+                          rightIcon={<></>}
+                          className="w-full"
+                          onChangeStart={() => { }}
+                          onChange={(v) => seekTo(v / 100)}
+                          onChangeEnd={(v) => seekTo(v / 100)}
+                        />
+                      </div>
+                      <div className="w-12 text-[12px] tabular-nums text-right opacity-70">
+                        -{fmt(Math.max(0, (duration || 0) - currentSec))}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Сам <audio/> спрятан — UI свой */}
-                <audio
-                  ref={audioRef}
-                  preload="metadata"
-                  playsInline
-                  // @ts-ignore
-                  webkit-playsinline="true"
-                  controlsList="nodownload noplaybackrate"
-                  crossOrigin="anonymous"
-                  data-ogma-player="1"
-                >
-                  <source data-ogma="1" />
-                </audio>
-              </div>
-            </GlassSurface>
-          </div>
+                  {/* Сам <audio/> спрятан — UI свой */}
+                  <audio
+                    ref={audioRef}
+                    preload="metadata"
+                    playsInline
+                    // @ts-ignore
+                    webkit-playsinline="true"
+                    controlsList="nodownload noplaybackrate"
+                    crossOrigin="anonymous"
+                    data-ogma-player="1"
+                  >
+                    <source data-ogma="1" />
+                  </audio>
+                </div>
+              </GlassSurface>
+            </div>
 
             {/* 2-я строка: кнопки управления */}
             <div className="w-full max-w-[640px] flex items-center justify-center gap-6 py-1">

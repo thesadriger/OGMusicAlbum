@@ -5,6 +5,24 @@
 @source "./index.html";
 @source "./src/**/*.{ts,tsx}";
 
+/* Запрет выделения текста по умолчанию для всего контейнера с .no-select */
+.no-select {
+  -webkit-user-select: none; /* iOS Safari */
+  -moz-user-select: none;    /* Firefox */
+  -ms-user-select: none;     /* old Edge */
+  user-select: none;
+}
+
+/* Но внутри разрешаем выделение текста в интерактивных полях ввода,
+   чтобы не ломать ввод, копипасту и др. UX */
+.no-select input,
+.no-select textarea {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
 /* база */
 @layer base {
   :root { color-scheme: light dark; }

@@ -67,13 +67,13 @@ export default function AddToPlaylistPopover({
     const spaceR = vw - r.right;
 
     // спец-режим для "+" — всегда поверх плеера и над ним
-    if (intent === "plus") {
-      const cx = Math.floor(vw / 2);
-      // якоримся по верхней грани кнопки в плеере
-      const cy = Math.max(24, r.top);
-      setCoords({ top: cy, left: cx, height: 0, placement: "center" });
-      return;
-    }
+    // if (intent === "plus") {
+    //   const cx = Math.floor(vw / 2);
+    //   // якоримся по верхней грани кнопки в плеере
+    //   const cy = Math.max(24, r.top);
+    //   setCoords({ top: cy, left: cx, height: 0, placement: "center" });
+    //   return;
+    // }
 
     let placement: Placement;
     if (spaceL >= widthSide + MARGIN + 4) placement = "left";

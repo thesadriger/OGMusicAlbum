@@ -7,20 +7,25 @@ import { TrackCard } from "@/components/TrackCard";
 import AnimatedList from "@/components/AnimatedList";
 import { useContentFilter, filterTracksUniqueByTitle } from "@/hooks/useContentFilter";
 import { goArtist } from "@/lib/router";
+import {
+  usePlayerStore,
+  selectCurrentTrackId,
+  selectIsPaused,
+  selectExpandedTrackId,
+} from "@/store/playerStore";
+import { toggleTrack as toggleTrackController } from "@/lib/playerController";
 
 type Props = {
   artist: string;
   onBack: () => void;
-  // было: onPlayList
-  nowId: string | null;
-  paused: boolean;
-  onToggleTrack: (list: Track[], startIndex: number, trackId: string) => void;
   onRequestExpand?: (track: Track, rect: DOMRect) => void;
-  expandedTrackId?: string | null;
   onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 };
 
-export default function ArtistPage({ artist, onBack, nowId, paused, onToggleTrack, onRequestExpand, expandedTrackId, onCardElementChange }: Props) {
+export default function ArtistPage({ artist, onBack, onRequestExpand, onCardElementChange }: Props) {
+  const nowId = usePlayerStore(selectCurrentTrackId);
+  const paused = usePlayerStore(selectIsPaused);
+  const expandedTrackId = usePlayerStore(selectExpandedTrackId);
   const [loading, setLoading] = useState(false);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [enter, setEnter] = useState(false);
@@ -115,7 +120,7 @@ export default function ArtistPage({ artist, onBack, nowId, paused, onToggleTrac
                 t={t}
                 isActive={nowId === t.id}
                 isPaused={paused}
-                onToggle={() => onToggleTrack(shown, i, t.id)}
+                onToggle={() => toggleTrackController(shown, i, t.id)}
                 onRequestExpand={onRequestExpand}
                 hideDuringExpand={expandedTrackId === t.id}
                 onCardElementChange={onCardElementChange}

@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Track } from "@/types/types";
 import { motion, PanInfo, useMotionValue, useTransform } from "motion/react";
+import { usePlayerStore, selectCurrentTrackId, selectIsPaused } from "@/store/playerStore";
+import { toggleTrack as toggleTrackController } from "@/lib/playerController";
 
 // фоны
 import LiquidChrome from "@/components/backgrounds/LiquidChrome";
@@ -33,9 +35,6 @@ import LiquidEther from "@/components/backgrounds/LiquidEther";
 
 type Props = {
   tracks: Track[];
-  nowId: string | null;
-  paused: boolean;
-  onToggle: (list: Track[], index: number) => void;
   title?: string;
   autoplay?: boolean;
   autoplayDelay?: number; // мс
@@ -63,9 +62,6 @@ const BG_BY_KEY = {
 
 export default function TracksCarousel({
   tracks,
-  nowId,
-  paused,
-  onToggle,
   title = "Рекомендации",
   autoplay = true,
   autoplayDelay = 3500,
@@ -75,6 +71,17 @@ export default function TracksCarousel({
   const [containerW, setContainerW] = useState<number>(760);
   const [idx, setIdx] = useState(0);
   const x = useMotionValue(0);
+
+  const currentId = usePlayerStore(selectCurrentTrackId);
+  const isPaused = usePlayerStore(selectIsPaused);
+
+  const handleToggle = useCallback(
+    (index: number) => {
+      const target = tracks[index];
+      toggleTrackController(tracks, index, target?.id);
+    },
+    [tracks]
+  );
 
   // включение/выключение автоплей
   const [autoPlayEnabled, setAutoPlayEnabled] = useState<boolean>(autoplay);
@@ -238,7 +245,7 @@ export default function TracksCarousel({
             ];
             const rotateY = useTransform(x, range, [90, 0, -90], { clamp: false });
 
-            const active = t.id === nowId;
+            const active = currentId != null && String(t.id) === currentId;
             const Bg = pickBackground(t.id);
 
             const HEAVY_BG = new Set<React.ComponentType<any>>([Hyperspeed, Galaxy, LiquidEther]);
@@ -260,7 +267,10 @@ export default function TracksCarousel({
             return (
               <motion.button
                 key={t.id || i}
-                onClick={() => { onToggle(tracks, i); pauseAutoplayTemporarily(); }}
+                onClick={() => {
+                  handleToggle(i);
+                  pauseAutoplayTemporarily();
+                }}
                 className={[
                   "relative shrink-0 text-left cursor-pointer active:cursor-grabbing outline-none",
                   "rounded-xl border overflow-hidden bg-transparent",
@@ -299,12 +309,12 @@ export default function TracksCarousel({
                     <span
                       className={[
                         "inline-flex items-center justify-center h-8 px-3 rounded-lg text-sm font-medium",
-                        active && !paused
+                        active && !isPaused
                           ? "bg-blue-600 text-white"
                           : "bg-zinc-200/80 dark:bg-zinc-800/80 text-zinc-900 dark:text-zinc-50",
                       ].join(" ")}
                     >
-                      {active ? (paused ? "Продолжить" : "Играет") : "Слушать"}
+                      {active ? (isPaused ? "Продолжить" : "Играет") : "Слушать"}
                     </span>
                     <span className="text-xs text-zinc-300/90">
                       {t.duration ? formatDuration(t.duration) : ""}

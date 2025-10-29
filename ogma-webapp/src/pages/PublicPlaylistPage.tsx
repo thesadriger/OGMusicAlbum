@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import type { Track } from "@/types/types";
 import { TrackCard } from "@/components/TrackCard";
 import AnimatedList from "@/components/AnimatedList";
@@ -11,6 +11,13 @@ import {
 import { useMe } from "@/hooks/useMe";
 import { goPlaylistHandle } from "@/lib/router";
 import { formatSecondsToHMS } from "@/lib/time";
+import {
+  usePlayerStore,
+  selectCurrentTrackId,
+  selectIsPaused,
+  selectExpandedTrackId,
+} from "@/store/playerStore";
+import { toggleTrack as toggleTrackController } from "@/lib/playerController";
 
 const GearIcon = () => (
   <svg width="20" height="20" viewBox="0 0 1024 1024" aria-hidden="true" fill="currentColor">
@@ -21,22 +28,17 @@ const GearIcon = () => (
 export default function PublicPlaylistPage({
   handle,
   onBack,
-  nowId,
-  paused,
-  onToggleTrack,
   onRequestExpand,
-  expandedTrackId,
   onCardElementChange,
 }: {
   handle: string;
   onBack: () => void;
-  nowId: string | null;
-  paused: boolean;
-  onToggleTrack: (list: Track[], startIndex: number) => void;
   onRequestExpand?: (track: Track, rect: DOMRect) => void;
-  expandedTrackId?: string | null;
   onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 }) {
+  const nowId = usePlayerStore(selectCurrentTrackId);
+  const paused = usePlayerStore(selectIsPaused);
+  const expandedTrackId = usePlayerStore(selectExpandedTrackId);
   const [info, setInfo] = useState<any | null>(null);
   const [items, setItems] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,6 +47,10 @@ export default function PublicPlaylistPage({
   const lastPlaylistEventTokenRef = useRef<string | null>(null);
   const { me } = useMe();
   const normalizedRouteHandle = handle.replace(/^@/, "").toLowerCase();
+
+  const toggleFromList = useCallback((tracks: Track[], index: number) => {
+    toggleTrackController(tracks, index, tracks[index]?.id);
+  }, []);
 
   const listenSeconds = useMemo(
     () => Number(info?.listen_seconds ?? info?.listenSeconds ?? 0),
@@ -278,7 +284,7 @@ export default function PublicPlaylistPage({
                 t={t}
                 isActive={nowId === t.id}
                 isPaused={paused}
-                onToggle={() => onToggleTrack(playbackList, i)}
+                onToggle={() => toggleFromList(playbackList, i)}
                 mode="playlist"
                 onRequestExpand={onRequestExpand}
                 hideDuringExpand={expandedTrackId === t.id}

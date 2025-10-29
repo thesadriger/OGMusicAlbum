@@ -7,6 +7,13 @@ import { TrackCard } from "@/components/TrackCard";
 import AnimatedList from "@/components/AnimatedList";
 import { useContentFilter, filterTracksUniqueByTitle } from "@/hooks/useContentFilter";
 import { goPlaylistHandle } from "@/lib/router";
+import {
+  usePlayerStore,
+  selectCurrentTrackId,
+  selectIsPaused,
+  selectExpandedTrackId,
+} from "@/store/playerStore";
+import { toggleTrack as toggleTrackController } from "@/lib/playerController";
 
 type SearchResp = { hits: Track[]; total?: number };
 type MaybeCatalogResp = { items?: Track[]; total?: number };
@@ -39,20 +46,15 @@ type PlaylistLite = {
 };
 
 export default function GlobalSearch({
-  nowId,
-  paused,
-  onToggleTrack,
   onRequestExpand,
-  expandedTrackId,
   onCardElementChange,
 }: {
-  nowId: string | null;
-  paused: boolean;
-  onToggleTrack: (list: Track[], startIndex: number) => void;
   onRequestExpand?: (track: Track, rect: DOMRect) => void;
-  expandedTrackId?: string | null;
   onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 }) {
+  const nowId = usePlayerStore(selectCurrentTrackId);
+  const paused = usePlayerStore(selectIsPaused);
+  const expandedTrackId = usePlayerStore(selectExpandedTrackId);
   const [q, setQ] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -382,7 +384,7 @@ export default function GlobalSearch({
                     t={t}
                     isActive={nowId === t.id}
                     isPaused={paused}
-                    onToggle={() => onToggleTrack(tracksShown, i)}
+                    onToggle={() => toggleTrackController(tracksShown, i)}
                     onRequestExpand={onRequestExpand}
                     hideDuringExpand={expandedTrackId === t.id}
                     onCardElementChange={onCardElementChange}

@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 type PlaylistLite = {
@@ -47,12 +47,13 @@ export default function AddToPlaylistPopover({
   }>({ top: 0, left: 0, height: 0, placement: "left" });
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const lastMeasuredHeightRef = useRef(0);
 
   // всегда портал в BODY, чтобы position:fixed был относительно вьюпорта,
   // а не трансформированного контейнера (#root с translate/scale/blur и т.п.)
   const portalHost = (typeof document !== "undefined" ? document.body : undefined) as HTMLElement;
 
-  const computePosition = () => {
+  const computePosition = useCallback(() => {
     const el = anchorRef.current;
     if (!el) return;
 
@@ -60,8 +61,19 @@ export default function AddToPlaylistPopover({
     const vw = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0);
     const vh = Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0);
 
-    const measured = rootRef.current?.getBoundingClientRect().width || POPOVER_WIDTH;
-    const widthSide = Math.min(POPOVER_WIDTH, Math.floor(vw * 0.8), measured);
+    const rootRect = rootRef.current?.getBoundingClientRect();
+    const measuredWidth = rootRect?.width || POPOVER_WIDTH;
+    const widthSide = Math.min(POPOVER_WIDTH, Math.floor(vw * 0.8), measuredWidth);
+
+    let measuredHeight = rootRect?.height || 0;
+    if (!measuredHeight && lastMeasuredHeightRef.current) {
+      measuredHeight = lastMeasuredHeightRef.current;
+    }
+
+    const maxHeight = Math.max(0, vh - MARGIN * 2);
+    if (measuredHeight && maxHeight > 0) {
+      measuredHeight = Math.min(measuredHeight, maxHeight);
+    }
 
     const spaceL = r.left;
     const spaceR = vw - r.right;
@@ -83,7 +95,8 @@ export default function AddToPlaylistPopover({
     if (placement === "center") {
       const cx = Math.floor(vw / 2);
       const cy = Math.floor(Math.min(vh - 24, Math.max(24, r.top + r.height / 2)));
-      setCoords({ top: cy, left: cx, height: 0, placement });
+      lastMeasuredHeightRef.current = measuredHeight;
+      setCoords({ top: cy, left: cx, height: measuredHeight, placement });
       return;
     }
 
@@ -91,8 +104,25 @@ export default function AddToPlaylistPopover({
     if (placement === "right" && left + widthSide > vw - MARGIN) left = vw - MARGIN - widthSide;
     if (placement === "left" && left < MARGIN) left = MARGIN;
 
-    setCoords({ top: r.top, left, height: r.height, placement });
-  };
+    let top = r.top;
+    if (measuredHeight > 0) {
+      const preferredTop = r.top - measuredHeight - MARGIN;
+      if (preferredTop >= MARGIN) {
+        top = preferredTop;
+      } else {
+        const maxTop = Math.max(MARGIN, vh - measuredHeight - MARGIN);
+        top = Math.min(Math.max(MARGIN, r.top), maxTop);
+      }
+    } else {
+      top = Math.max(MARGIN, Math.min(r.top, vh - MARGIN));
+    }
+
+    lastMeasuredHeightRef.current = measuredHeight;
+
+    setCoords({ top, left, height: measuredHeight, placement });
+  }, [anchorRef]);
+
+  const list = useMemo(() => playlists || [], [playlists]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -109,8 +139,16 @@ export default function AddToPlaylistPopover({
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, computePosition, list.length, intent]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const el = rootRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => computePosition());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, computePosition]);
 
   // закрытие по клику-вне/тачу-вне без полноэкранного fixed-оверлея
   useEffect(() => {
@@ -124,7 +162,7 @@ export default function AddToPlaylistPopover({
   }, [open, onClose, anchorRef]);
 
   // Хуки — всегда до любых early-returns
-  const list = useMemo(() => playlists || [], [playlists]);
+  
   // высота одной строки публичного плейлиста для вычисления maxHeight
   const [rowH, setRowH] = useState(48);
 

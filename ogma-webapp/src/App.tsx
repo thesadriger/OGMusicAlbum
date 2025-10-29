@@ -188,6 +188,7 @@ export default function App() {
 
   const resolveAddAnchor = useCallback(() => {
     const el =
+      (document.getElementById("ogma-player-add-btn-expanded") as HTMLElement | null) ||
       (document.getElementById("ogma-player-add-btn") as HTMLElement | null) ||
       (document.querySelector(
         'button[aria-label="Добавить трек в плейлист"]'

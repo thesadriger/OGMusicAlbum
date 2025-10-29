@@ -12,6 +12,9 @@ export default function PlaylistPage({
   onToggleTrack,
   embedded = false,
   q = "",
+  onRequestExpand,
+  expandedTrackId,
+  onCardElementChange,
 }: {
   onBack: () => void;
   nowId: string | null;
@@ -19,6 +22,9 @@ export default function PlaylistPage({
   onToggleTrack: (list: Track[], startIndex: number, trackId: string) => void;
   embedded?: boolean;
   q?: string;
+  onRequestExpand?: (track: Track, rect: DOMRect) => void;
+  expandedTrackId?: string | null;
+  onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 }) {
   const [list, setList] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
@@ -177,6 +183,9 @@ export default function PlaylistPage({
                     onToggleTrack(tracksOfPicked, i, t.id)
                   }
                   mode="playlist"
+                  onRequestExpand={onRequestExpand}
+                  hideDuringExpand={expandedTrackId === t.id}
+                  onCardElementChange={onCardElementChange}
                 />
               ))}
             </div>
@@ -195,6 +204,9 @@ export default function PlaylistPage({
               isPaused={paused}
               onToggle={() => onToggleTrack(filtered, i, t.id)}
               mode="playlist"
+              onRequestExpand={onRequestExpand}
+              hideDuringExpand={expandedTrackId === t.id}
+              onCardElementChange={onCardElementChange}
             />
           ))}
         </div>

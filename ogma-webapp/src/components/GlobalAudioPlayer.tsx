@@ -515,9 +515,11 @@ export default function GlobalAudioPlayer({
       playRequestIdRef.current++;
       try { audioRef.current?.pause(); } catch { }
     };
+    (window as any).__ogmaGetAudio = () => audioRef.current;
     return () => {
       try { delete (window as any).__ogmaPlay; } catch { }
       try { delete (window as any).__ogmaPause; } catch { }
+      try { delete (window as any).__ogmaGetAudio; } catch { }
     };
   }, [onPlayPauseChange]);
 
@@ -733,6 +735,7 @@ export default function GlobalAudioPlayer({
                   webkit-playsinline="true"
                   controlsList="nodownload noplaybackrate"
                   crossOrigin="anonymous"
+                  data-ogma-player="1"
                 >
                   <source data-ogma="1" />
                 </audio>

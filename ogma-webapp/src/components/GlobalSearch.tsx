@@ -41,10 +41,16 @@ export default function GlobalSearch({
   nowId,
   paused,
   onToggleTrack,
+  onRequestExpand,
+  expandedTrackId,
+  onCardElementChange,
 }: {
   nowId: string | null;
   paused: boolean;
   onToggleTrack: (list: Track[], startIndex: number) => void;
+  onRequestExpand?: (track: Track, rect: DOMRect) => void;
+  expandedTrackId?: string | null;
+  onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 }) {
   const [q, setQ] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -375,6 +381,9 @@ export default function GlobalSearch({
                   isActive={nowId === t.id}
                   isPaused={paused}
                   onToggle={() => onToggleTrack(tracksShown, i)}
+                  onRequestExpand={onRequestExpand}
+                  hideDuringExpand={expandedTrackId === t.id}
+                  onCardElementChange={onCardElementChange}
                 />
               ))}
             </div>

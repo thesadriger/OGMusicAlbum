@@ -31,6 +31,7 @@ import TracksCarousel from "@/components/TracksCarousel";
 import AddToPlaylistPopover from "@/components/AddToPlaylistPopover";
 import GlobalSearch from "@/components/GlobalSearch";
 import ShinyText from "@/components/ShinyText";
+import ExpandedPlayerOverlay from "@/components/ExpandedPlayerOverlay";
 
 type RecsResp = { items: Track[]; limit: number };
 
@@ -40,6 +41,15 @@ type PlaylistLite = {
   title: string;
   handle?: string | null;
   is_public?: boolean;
+};
+
+type RectLike = { left: number; top: number; width: number; height: number };
+type ExpandedPlayerPhase = "closed" | "opening" | "open" | "closing";
+type ExpandedPlayerState = {
+  phase: ExpandedPlayerPhase;
+  originRect: RectLike | null;
+  originTrackId: string | null;
+  track: Track | null;
 };
 
 
@@ -76,6 +86,97 @@ export default function App() {
 
   // режим перемешивания
   const [shuffle, setShuffle] = useState(false);
+
+  const cardRegistryRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [expandedPlayer, setExpandedPlayer] = useState<ExpandedPlayerState>({
+    phase: "closed",
+    originRect: null,
+    originTrackId: null,
+    track: null,
+  });
+
+  const registerCardElement = useCallback((trackId: string, el: HTMLDivElement | null) => {
+    const map = cardRegistryRef.current;
+    if (!trackId) return;
+    if (!el) map.delete(trackId);
+    else map.set(trackId, el);
+  }, []);
+
+  const measureCardRect = useCallback(
+    (trackId: string): RectLike | null => {
+      const el = cardRegistryRef.current.get(trackId);
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    },
+    []
+  );
+
+  const getAudio = useCallback(() => {
+    try {
+      const fn = (window as any).__ogmaGetAudio;
+      if (typeof fn === "function") {
+        const node = fn();
+        if (node) return node;
+      }
+    } catch { }
+    return (document.querySelector('audio[data-ogma-player="1"]') as HTMLAudioElement | null) ?? null;
+  }, []);
+
+  const handleRequestExpand = useCallback(
+    (track: Track, rect: DOMRect) => {
+      if (!now || !track || String(now.id) !== String(track.id)) return;
+      setExpandedPlayer((prev) => {
+        if (prev.phase !== "closed") return prev;
+        const rectLike: RectLike = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+        return {
+          phase: "opening",
+          originRect: rectLike,
+          originTrackId: String(track.id),
+          track,
+        };
+      });
+    },
+    [now]
+  );
+
+  const handleOverlayOpened = useCallback(() => {
+    setExpandedPlayer((prev) => (prev.phase === "opening" ? { ...prev, phase: "open" } : prev));
+  }, []);
+
+  const handleOverlayClosed = useCallback(() => {
+    setExpandedPlayer({ phase: "closed", originRect: null, originTrackId: null, track: null });
+  }, []);
+
+  const requestCloseExpanded = useCallback(() => {
+    setExpandedPlayer((prev) => {
+      if (prev.phase === "closed") return prev;
+      const originId = prev.originTrackId;
+      const rect = originId ? measureCardRect(originId) : null;
+      return { ...prev, phase: "closing", originRect: rect };
+    });
+  }, [measureCardRect]);
+
+  const togglePlayPauseExpanded = useCallback(() => {
+    const audio = getAudio();
+    if (!audio) return;
+    if (audio.paused) {
+      audio
+        .play()
+        .then(() => setPaused(false))
+        .catch(() => { });
+    } else {
+      audio.pause();
+      setPaused(true);
+    }
+  }, [getAudio]);
+
+  useEffect(() => {
+    setExpandedPlayer((prev) => {
+      if (prev.phase === "closed") return prev;
+      return { ...prev, track: now };
+    });
+  }, [now]);
 
   // === Add-to-Playlist popover — ВНУТРИ компонента ===
   const addBtnAnchorRef = useRef<HTMLElement>(null);
@@ -406,6 +507,11 @@ export default function App() {
 
   const isProfile = route.name === "profile";
 
+  const hiddenTrackId = expandedPlayer.phase === "closed" ? null : expandedPlayer.originTrackId;
+  const overlayPhase = expandedPlayer.phase;
+  const overlayTrack = expandedPlayer.track ?? now;
+  const shouldShowOverlay = overlayPhase !== "closed";
+
   return (
     <AuthGate>
       <div className="min-h-screen pb-28 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
@@ -453,6 +559,9 @@ export default function App() {
               nowId={now?.id ?? null}
               paused={paused}
               onToggleTrack={(list, idx) => toggleTrack(list, idx, list[idx]?.id)}
+              onRequestExpand={handleRequestExpand}
+              expandedTrackId={hiddenTrackId}
+              onCardElementChange={registerCardElement}
             />
           )}
 
@@ -463,6 +572,9 @@ export default function App() {
               nowId={now?.id ?? null}
               paused={paused}
               onToggleTrack={toggleTrack}
+              onRequestExpand={handleRequestExpand}
+              expandedTrackId={hiddenTrackId}
+              onCardElementChange={registerCardElement}
             />
           ) : route.name === "publicPlaylist" ? (
             <PublicPlaylistPage
@@ -472,6 +584,9 @@ export default function App() {
               nowId={now?.id ?? null}
               paused={paused}
               onToggleTrack={(list, idx) => toggleTrack(list, idx, list[idx]?.id)}
+              onRequestExpand={handleRequestExpand}
+              expandedTrackId={hiddenTrackId}
+              onCardElementChange={registerCardElement}
             />
           ) : route.name === "artists" ? (
             <ArtistsListPage
@@ -488,9 +603,18 @@ export default function App() {
               nowId={now?.id ?? null}
               paused={paused}
               onToggleTrack={toggleTrack}
+              onRequestExpand={handleRequestExpand}
+              expandedTrackId={hiddenTrackId}
+              onCardElementChange={registerCardElement}
             />
           ) : route.name === "profile" ? (
-            <ProfilePage nowId={now?.id ?? null} paused={paused} />
+            <ProfilePage
+              nowId={now?.id ?? null}
+              paused={paused}
+              onRequestExpand={handleRequestExpand}
+              expandedTrackId={hiddenTrackId}
+              onCardElementChange={registerCardElement}
+            />
           ) : (
             <div className="space-y-4">
               {recsShuffled.length > 0 && (
@@ -512,10 +636,33 @@ export default function App() {
                 </div>
               )}
 
-              <ProfilePage nowId={now?.id ?? null} paused={paused} embedded />
+              <ProfilePage
+                nowId={now?.id ?? null}
+                paused={paused}
+                embedded
+                onRequestExpand={handleRequestExpand}
+                expandedTrackId={hiddenTrackId}
+                onCardElementChange={registerCardElement}
+              />
             </div>
           )}
         </div>
+
+        {shouldShowOverlay && (
+          <ExpandedPlayerOverlay
+            track={overlayTrack}
+            phase={overlayPhase as "opening" | "open" | "closing"}
+            originRect={expandedPlayer.originRect}
+            onOpened={handleOverlayOpened}
+            onClosed={handleOverlayClosed}
+            onCloseRequested={requestCloseExpanded}
+            paused={paused}
+            onTogglePlayPause={togglePlayPauseExpanded}
+            onNext={() => next(false)}
+            onPrev={() => prev(false)}
+            getAudio={getAudio}
+          />
+        )}
 
         <GlobalAudioPlayer
           now={now}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo, FC } from 'react';
+import { useEffect, useRef, FC } from 'react';
 import * as THREE from 'three';
 import { BloomEffect, EffectComposer, EffectPass, RenderPass, SMAAEffect, SMAAPreset } from 'postprocessing';
 
@@ -1241,13 +1241,43 @@ class App {
   }
 }
 
-const Hyperspeed: FC<HyperspeedProps> = (props) => {
-  const { effectOptions = {} } = props ?? {};
-  const mergedOptions = useMemo<HyperspeedOptions>(
-    () => ({ ...defaultOptions, ...(effectOptions || {}) }),
-    [JSON.stringify(effectOptions || {})]
+function serializeEffectOptions(options?: Partial<HyperspeedOptions>) {
+  if (!options) return 'default';
+  const seen = new WeakSet<object>();
+  return (
+    JSON.stringify(options, (_key, value) => {
+      if (typeof value === 'function') {
+        return `[Function ${value.name || 'anonymous'}]`;
+      }
+      if (typeof value === 'bigint') {
+        return `[BigInt ${value.toString()}]`;
+      }
+      if (value && typeof value === 'object') {
+        if (seen.has(value as object)) {
+          return '[Circular]';
+        }
+        seen.add(value as object);
+        if (value instanceof Map) {
+          return {
+            dataType: 'Map',
+            value: Array.from(value.entries()),
+          };
+        }
+        if (value instanceof Set) {
+          return {
+            dataType: 'Set',
+            value: Array.from(value.values()),
+          };
+        }
+      }
+      return value;
+    }) || 'default'
   );
+}
 
+const Hyperspeed: FC<HyperspeedProps> = (props) => {
+  const effectOptions = props?.effectOptions;
+  const effectOptionsKey = serializeEffectOptions(effectOptions);
   const hyperspeed = useRef<HTMLDivElement>(null);
   const appRef = useRef<App | null>(null);
 
@@ -1263,9 +1293,12 @@ const Hyperspeed: FC<HyperspeedProps> = (props) => {
     if (!container) return;
 
     // готовим опции
-    const options: HyperspeedOptions = { ...mergedOptions };
+    const options: HyperspeedOptions = {
+      ...defaultOptions,
+      ...(effectOptions || {}),
+    };
     if (typeof options.distortion === 'string') {
-      options.distortion = distortions[options.distortion];
+      options.distortion = distortions[options.distortion] ?? distortions.turbulentDistortion;
     }
 
     // создаём приложение
@@ -1287,7 +1320,7 @@ const Hyperspeed: FC<HyperspeedProps> = (props) => {
         appRef.current = null;
       }
     };
-  }, [mergedOptions]);
+  }, [effectOptions, effectOptionsKey]);
 
   return <div className="w-full h-full" ref={hyperspeed} />;
 };

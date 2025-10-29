@@ -203,7 +203,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   // Прогресс трека
   const getAudio = useCallback(() =>
     document.querySelector(`audio[data-track-id="${t.id}"]`) as HTMLAudioElement | null,
-  [t.id]);
+    [t.id]);
   const remoteContains = useMemo(
     () => Object.values(serverContains).some(Boolean),
     [serverContains]
@@ -275,7 +275,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
 
   // --- ВЫНЕСЕННЫЕ ЭФФЕКТЫ ---
 
-   // 2) глобально блокируем touchmove только во время скраба (iOS/TG overscroll)
+  // 2) глобально блокируем touchmove только во время скраба (iOS/TG overscroll)
   useEffect(() => {
     const onTouchMove = (ev: TouchEvent) => {
       if (scrubbing) ev.preventDefault();
@@ -938,17 +938,29 @@ function TrackProgressOverlay({ trackId, isActive, getAudio, scrubbing, scrubPct
     node.style.width = `${clamped * 100}%`;
   }, []);
 
+  // держим актуальный флаг скраба в ref (как было)
   useEffect(() => {
     scrubbingRef.current = scrubbing;
   }, [scrubbing]);
 
+  // во время скраба двигаем плёнку по scrubPct
   useEffect(() => {
     if (scrubbing) {
       setWidth(scrubPct);
       return;
     }
+    // если скраб только что закончился — сразу прыгаем в последнее реальное положение трека,
+    // чтобы плёнка не залипала на старом scrubPct
     setWidth(lastProgressRef.current);
   }, [scrubbing, scrubPct, lastProgressRef, setWidth]);
+
+  // когда скраб СЕЙЧАС закончился,
+  // принудительно синкаем прогресс с аудио, ещё до того как rAF начнёт стримить апдейты
+  useEffect(() => {
+    if (!scrubbing) {
+      setWidth(lastProgressRef.current);
+    }
+  }, [scrubbing, lastProgressRef, setWidth]);
 
   useEffect(() => {
     let running = false;

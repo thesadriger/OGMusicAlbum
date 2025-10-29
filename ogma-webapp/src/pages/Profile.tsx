@@ -272,7 +272,7 @@ export default function ProfilePage({
     const cache = backgroundCacheRef.current;
     const cached = cache[headerBgKey];
     if (cached !== undefined) {
-      setHeaderBackgroundComponent(cached);
+      setHeaderBackgroundComponent(() => cached ?? null);
       return;
     }
 
@@ -290,7 +290,7 @@ export default function ProfilePage({
       .then((mod) => {
         if (disposed) return;
         cache[headerBgKey] = mod.default;
-        setHeaderBackgroundComponent(mod.default);
+        setHeaderBackgroundComponent(() => mod.default);
       })
       .catch(() => {
         if (disposed) return;

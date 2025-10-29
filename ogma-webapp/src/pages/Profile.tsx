@@ -118,9 +118,23 @@ function applyAppBackgroundFromStorage() {
   window.dispatchEvent(new Event("ogma:theme-changed"));
 }
 
-type ProfileProps = { nowId: string | null; paused: boolean; embedded?: boolean };
+type ProfileProps = {
+  nowId: string | null;
+  paused: boolean;
+  embedded?: boolean;
+  onRequestExpand?: (track: Track, rect: DOMRect) => void;
+  expandedTrackId?: string | null;
+  onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
+};
 
-export default function ProfilePage({ nowId, paused, embedded = false }: ProfileProps) {
+export default function ProfilePage({
+  nowId,
+  paused,
+  embedded = false,
+  onRequestExpand,
+  expandedTrackId,
+  onCardElementChange,
+}: ProfileProps) {
   /* ===== Hooks (всегда в одном порядке, без раннего return до них) ===== */
   const { me, loading, error } = useMe();
   const listeningTotals = usePlaylistListeningTotal();
@@ -553,6 +567,9 @@ export default function ProfilePage({ nowId, paused, embedded = false }: Profile
           paused={paused}
           onToggleTrack={onToggleTrack}
           q={localQ}
+          onRequestExpand={onRequestExpand}
+          expandedTrackId={expandedTrackId}
+          onCardElementChange={onCardElementChange}
         />
       </div>
 

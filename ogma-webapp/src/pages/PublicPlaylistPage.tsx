@@ -23,12 +23,18 @@ export default function PublicPlaylistPage({
   nowId,
   paused,
   onToggleTrack,
+  onRequestExpand,
+  expandedTrackId,
+  onCardElementChange,
 }: {
   handle: string;
   onBack: () => void;
   nowId: string | null;
   paused: boolean;
   onToggleTrack: (list: Track[], startIndex: number) => void;
+  onRequestExpand?: (track: Track, rect: DOMRect) => void;
+  expandedTrackId?: string | null;
+  onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 }) {
   const [info, setInfo] = useState<any | null>(null);
   const [items, setItems] = useState<Track[]>([]);
@@ -272,6 +278,9 @@ export default function PublicPlaylistPage({
               isPaused={paused}
               onToggle={() => onToggleTrack(playbackList, i)}
               mode="playlist"
+              onRequestExpand={onRequestExpand}
+              hideDuringExpand={expandedTrackId === t.id}
+              onCardElementChange={onCardElementChange}
               onRemoveFromPublic={async (track) => {
                 await removeItemFromPublicPlaylistByHandle(handle, track);
                 let removed = false;

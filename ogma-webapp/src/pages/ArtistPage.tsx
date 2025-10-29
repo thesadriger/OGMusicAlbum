@@ -14,9 +14,12 @@ type Props = {
   nowId: string | null;
   paused: boolean;
   onToggleTrack: (list: Track[], startIndex: number, trackId: string) => void;
+  onRequestExpand?: (track: Track, rect: DOMRect) => void;
+  expandedTrackId?: string | null;
+  onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 };
 
-export default function ArtistPage({ artist, onBack, nowId, paused, onToggleTrack }: Props) {
+export default function ArtistPage({ artist, onBack, nowId, paused, onToggleTrack, onRequestExpand, expandedTrackId, onCardElementChange }: Props) {
   const [loading, setLoading] = useState(false);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [enter, setEnter] = useState(false);
@@ -111,6 +114,9 @@ export default function ArtistPage({ artist, onBack, nowId, paused, onToggleTrac
               isActive={nowId === t.id}
               isPaused={paused}
               onToggle={() => onToggleTrack(shown, i, t.id)}
+              onRequestExpand={onRequestExpand}
+              hideDuringExpand={expandedTrackId === t.id}
+              onCardElementChange={onCardElementChange}
             />
           ))}
         </div>

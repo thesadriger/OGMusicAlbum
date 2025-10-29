@@ -8,5 +8,7 @@ declare global {
          * мгновенно выставить src и дернуть play() в разрешенном контексте.
          */
         __ogmaPlay?: (t: import("@/types/types").Track) => void;
+        __ogmaPause?: () => void;
+        __ogmaGetAudio?: () => HTMLAudioElement | null;
     }
 }

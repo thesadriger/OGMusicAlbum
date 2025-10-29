@@ -57,14 +57,33 @@ type Props = {
   /** форсируем режим/ключ фона (нужно для предпросмотров в настройках) */
   forceBgMode?: "random" | "fixed";
   forceBgKey?: string;
+
+  /** жестовое раскрытие в полноэкранный плеер */
+  onRequestExpand?: (track: Track, originRect: DOMRect) => void;
+  hideDuringExpand?: boolean;
+  onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 };
 
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
+const EXPAND_HOLD_MS = 450;
+const EXPAND_CANCEL_PX = 12;
 
 type MyPlaylist = { id: string; title: string; is_public: boolean; handle?: string | null };
 
-export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", onRemoveFromPublic, forceBgMode, forceBgKey, }: Props) {
+export function TrackCard({
+  t,
+  isActive,
+  isPaused,
+  onToggle,
+  mode = "default",
+  onRemoveFromPublic,
+  forceBgMode,
+  forceBgKey,
+  onRequestExpand,
+  hideDuringExpand,
+  onCardElementChange,
+}: Props) {
   const [scrubbing, setScrubbing] = useState(false);
   const [scrubPct, setScrubPct] = useState(0);
   const lastProgressRef = useRef(0);
@@ -79,6 +98,36 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
 
   const swipeControllerRef = useRef<SwipeController | null>(null);
   const scrubControllerRef = useRef<ScrubController | null>(null);
+  const expandHoldTimerRef = useRef<number | null>(null);
+  const expandPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const expandPendingRef = useRef(false);
+  const expandTriggeredRef = useRef(false);
+  const draggingRef = useRef(dragging);
+  const scrubbingRef = useRef(scrubbing);
+
+  useEffect(() => {
+    draggingRef.current = dragging;
+  }, [dragging]);
+
+  useEffect(() => {
+    scrubbingRef.current = scrubbing;
+  }, [scrubbing]);
+
+  const cancelExpandHold = useCallback(() => {
+    if (expandHoldTimerRef.current != null) {
+      clearTimeout(expandHoldTimerRef.current);
+      expandHoldTimerRef.current = null;
+    }
+    expandPendingRef.current = false;
+  }, []);
+
+  useEffect(() => () => cancelExpandHold(), [cancelExpandHold]);
+
+  useEffect(() => {
+    if (scrubbing || dragging) cancelExpandHold();
+  }, [scrubbing, dragging, cancelExpandHold]);
+
+  const triggerExpandRef = useRef<(() => void) | null>(null);
 
   const settleState = useCallback((next: { dx: number; anim: "none" | "snap" | "remove"; leftOpen: boolean }) => {
     setAnim(next.anim);
@@ -142,6 +191,15 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   const cardRef = useRef<HTMLDivElement | null>(null);
   const fullPullPxRef = useRef(120);
   const pivotYRef = useRef(50);
+
+  useEffect(() => {
+    if (!onCardElementChange) return;
+    const trackId = String(t.id ?? "");
+    onCardElementChange(trackId, cardRef.current);
+    return () => {
+      onCardElementChange(trackId, null);
+    };
+  }, [onCardElementChange, t.id]);
 
   useEffect(() => {
     if (!toast) return;
@@ -311,6 +369,12 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     isolation: "isolate",
     transformOrigin: `50% ${pivotYRef.current}%`,
   };
+
+  if (hideDuringExpand) {
+    style.opacity = 0;
+    style.visibility = "hidden";
+    style.pointerEvents = "none";
+  }
 
   const tg = (typeof window !== "undefined"
     ? (window as any)?.Telegram?.WebApp
@@ -560,12 +624,34 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
   const hapticImpactRef = useRef(hapticImpact);
   useEffect(() => { hapticImpactRef.current = hapticImpact; }, [hapticImpact]);
 
+  useEffect(() => {
+    triggerExpandRef.current = () => {
+      if (!isActive || !onRequestExpand) return;
+      if (scrubbingRef.current || draggingRef.current) return;
+      const node = cardRef.current;
+      if (!node) return;
+      expandPendingRef.current = false;
+      expandTriggeredRef.current = true;
+      try {
+        const rect = node.getBoundingClientRect();
+        onRequestExpand(t, rect);
+      } catch { }
+      try {
+        hapticImpactRef.current?.("medium");
+      } catch { }
+    };
+    return () => {
+      triggerExpandRef.current = null;
+    };
+  }, [isActive, onRequestExpand, t]);
+
   const hapticTickRef = useRef(hapticTick);
   useEffect(() => { hapticTickRef.current = hapticTick; }, [hapticTick]);
 
   useEffect(() => {
     const swipe = new SwipeController({
       onDragStart: ({ pivotY, fullPullPx }) => {
+        cancelExpandHold();
         pivotYRef.current = pivotY;
         fullPullPxRef.current = fullPullPx;
         setDragging(true);
@@ -594,11 +680,12 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
       swipe.dispose();
       swipeControllerRef.current = null;
     };
-  }, []);
+  }, [cancelExpandHold]);
 
   useEffect(() => {
     const scrub = new ScrubController({
       onScrubStart: ({ pct }) => {
+        cancelExpandHold();
         setScrubbing(true);
         setScrubPct(pct);
         lastProgressRef.current = pct;
@@ -629,7 +716,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
       scrub.dispose();
       scrubControllerRef.current = null;
     };
-  }, [getAudio, settleState]);
+  }, [getAudio, settleState, cancelExpandHold]);
 
   useEffect(() => {
     const swipe = swipeControllerRef.current;
@@ -637,6 +724,10 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     if (frozen || chooseOpen) swipe.freeze();
     else swipe.unfreeze();
   }, [chooseOpen, frozen]);
+
+  useEffect(() => {
+    if (frozen || chooseOpen) cancelExpandHold();
+  }, [frozen, chooseOpen, cancelExpandHold]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (frozen || chooseOpen) return;
@@ -656,6 +747,23 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
       initialPct: basePct,
       isActive: !!isActive,
     });
+
+    if (isActive && onRequestExpand) {
+      cancelExpandHold();
+      expandPointerRef.current = { x: e.clientX, y: e.clientY };
+      expandPendingRef.current = true;
+      expandTriggeredRef.current = false;
+      expandHoldTimerRef.current = window.setTimeout(() => {
+        expandHoldTimerRef.current = null;
+        if (!expandPendingRef.current) return;
+        triggerExpandRef.current?.();
+      }, EXPAND_HOLD_MS);
+    } else {
+      expandPendingRef.current = false;
+      expandTriggeredRef.current = false;
+      expandPointerRef.current = null;
+      cancelExpandHold();
+    }
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -663,6 +771,17 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     const swipe = swipeControllerRef.current;
     const scrub = scrubControllerRef.current;
     if (!swipe || !scrub) return;
+
+    if (expandPendingRef.current && expandPointerRef.current) {
+      const dx = Math.abs(e.clientX - expandPointerRef.current.x);
+      const dy = Math.abs(e.clientY - expandPointerRef.current.y);
+      if (dx > EXPAND_CANCEL_PX || dy > EXPAND_CANCEL_PX) {
+        cancelExpandHold();
+      }
+    }
+    if (expandPendingRef.current && (scrubbingRef.current || draggingRef.current)) {
+      cancelExpandHold();
+    }
 
     scrub.pointerMove({ x: e.clientX, y: e.clientY });
     if (!scrub.isScrubbing()) {
@@ -676,8 +795,16 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     const scrub = scrubControllerRef.current;
     if (!swipe || !scrub) return;
 
+    const triggeredExpand = expandTriggeredRef.current;
+    cancelExpandHold();
+    expandPointerRef.current = null;
+
     const wasScrubbing = scrub.isScrubbing();
     scrub.pointerUp();
+    if (triggeredExpand) {
+      expandTriggeredRef.current = false;
+      return;
+    }
     if (wasScrubbing) {
       return;
     }
@@ -689,8 +816,17 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     const scrub = scrubControllerRef.current;
     if (!swipe || !scrub) return;
 
+    const triggeredExpand = expandTriggeredRef.current;
+    cancelExpandHold();
+    expandPointerRef.current = null;
+
     const wasScrubbing = scrub.isScrubbing();
     scrub.cancel();
+    if (triggeredExpand) {
+      expandTriggeredRef.current = false;
+      swipe.cancel({ leftOpen: false });
+      return;
+    }
     swipe.cancel({ leftOpen: wasScrubbing ? false : leftOpen });
   };
 

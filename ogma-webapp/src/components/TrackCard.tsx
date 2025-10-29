@@ -710,6 +710,7 @@ export function TrackCard({
         progressOverlayRef.current?.setVisualProgress(lastProgressRef.current);
       },
       onHapticImpact: (kind) => hapticImpactRef.current(kind),
+      shouldSuppressHold: () => expandPendingRef.current,
     });
     scrubControllerRef.current = scrub;
     return () => {

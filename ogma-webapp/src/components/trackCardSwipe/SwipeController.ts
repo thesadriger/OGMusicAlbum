@@ -1,3 +1,4 @@
+//home/ogma/ogma/ogma-webapp/src/components/trackCardSwipe/SwipeController.ts
 import type { ImpactKind } from "./types";
 
 // TRIGGER_COMMIT — «жёсткий» порог. Дотянули сюда → считаем, что пользователь точно хотел действие.

@@ -1,3 +1,4 @@
+//home/ogma/ogma/ogma-webapp/src/components/trackCardSwipe/types.ts
 /**
  * Типы, которые разделяют контроллеры свайпа/скраба.
  */

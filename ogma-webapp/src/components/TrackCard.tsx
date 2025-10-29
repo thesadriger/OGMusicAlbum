@@ -275,7 +275,7 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
 
   // --- ВЫНЕСЕННЫЕ ЭФФЕКТЫ ---
 
-  // 2) глобально блокируем touchmove только во время скраба (iOS/TG overscroll)
+   // 2) глобально блокируем touchmove только во время скраба (iOS/TG overscroll)
   useEffect(() => {
     const onTouchMove = (ev: TouchEvent) => {
       if (scrubbing) ev.preventDefault();
@@ -285,11 +285,6 @@ export function TrackCard({ t, isActive, isPaused, onToggle, mode = "default", o
     return () =>
       document.removeEventListener("touchmove", onTouchMove as any);
   }, [scrubbing]);
-
-  // 3) чистим таймер long-press при размонтировании
-  useEffect(() => {
-    return () => { if (holdTimer.current) clearTimeout(holdTimer.current); };
-  }, []);
 
   // визуальная «натянутость»
   const pullPct = clamp(Math.abs(leftOpen ? dx + LEFT_REVEAL : dx) / Math.max(1, fullPullPxRef.current), 0, 1);

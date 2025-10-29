@@ -148,8 +148,8 @@ const clamp = (x: number, min: number, max: number) =>
 // Секция с подсказками по жестам была убрана из дизайна, но нужно сохранить
 // тот же вертикальный отступ, чтобы блок с информацией о треке не "проседал".
 // 24px — это отступ gap-6 между контролами и подсказками.
-const DEFAULT_GESTURE_HINTS_SPACE = 96;
-const GESTURE_HINTS_GAP_PX = 24;
+const DEFAULT_GESTURE_HINTS_SPACE = 0;
+const GESTURE_HINTS_GAP_PX = 15;
 const SHOW_GESTURE_HINTS = false; // можно быстро вернуть подсказки, поменяв на true
 
 function pickBackground(trackId: string | number | null | undefined) {
@@ -686,7 +686,7 @@ export default function ExpandedPlayerOverlay({
                 }}
               >
                 <div
-                  className="flex w-full flex-col items-center gap-6"
+                  className="flex w-full flex-col items-center gap-5"
                   style={
                     SHOW_GESTURE_HINTS
                       ? undefined

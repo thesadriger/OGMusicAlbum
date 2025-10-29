@@ -34,8 +34,8 @@ export default function ElasticSlider({
   isStepped = false,
   stepSize = 1,
   className = "",
-  leftIcon = <></>,
-  rightIcon = <></>,
+  leftIcon = null,
+  rightIcon = null,
   onChangeStart,
   onChange,
   onChangeEnd,
@@ -116,6 +116,9 @@ export default function ElasticSlider({
     return total === 0 ? 0 : ((value - startingValue) / total) * 100;
   })();
 
+  const hasLeftIcon = leftIcon !== null && leftIcon !== undefined && leftIcon !== false;
+  const hasRightIcon = rightIcon !== null && rightIcon !== undefined && rightIcon !== false;
+
   return (
     <div className={`flex w-full items-center justify-center gap-3 ${className}`}>
       <motion.div
@@ -124,14 +127,18 @@ export default function ElasticSlider({
         onTouchStart={() => animate(scale, 1.15)}
         onTouchEnd={() => animate(scale, 1)}
         style={{ scale, opacity: useTransform(scale, [1, 1.15], [0.7, 1]) }}
-        className="flex w-full touch-none select-none items-center justify-center gap-4"
+        className={`flex w-full touch-none select-none items-center justify-center ${
+          hasLeftIcon || hasRightIcon ? "gap-4" : "gap-0"
+        }`}
       >
-        <motion.div
-          animate={{ scale: region === "left" ? [1, 1.35, 1] : 1, transition: { duration: 0.25 } }}
-          style={{ x: useTransform(() => (region === "left" ? -overflow.get() / scale.get() : 0)) }}
-        >
-          {leftIcon}
-        </motion.div>
+        {hasLeftIcon ? (
+          <motion.div
+            animate={{ scale: region === "left" ? [1, 1.35, 1] : 1, transition: { duration: 0.25 } }}
+            style={{ x: useTransform(() => (region === "left" ? -overflow.get() / scale.get() : 0)) }}
+          >
+            {leftIcon}
+          </motion.div>
+        ) : null}
 
         <div
           ref={sliderRef}
@@ -172,12 +179,14 @@ export default function ElasticSlider({
           </motion.div>
         </div>
 
-        <motion.div
-          animate={{ scale: region === "right" ? [1, 1.35, 1] : 1, transition: { duration: 0.25 } }}
-          style={{ x: useTransform(() => (region === "right" ? overflow.get() / scale.get() : 0)) }}
-        >
-          {rightIcon}
-        </motion.div>
+        {hasRightIcon ? (
+          <motion.div
+            animate={{ scale: region === "right" ? [1, 1.35, 1] : 1, transition: { duration: 0.25 } }}
+            style={{ x: useTransform(() => (region === "right" ? overflow.get() / scale.get() : 0)) }}
+          >
+            {rightIcon}
+          </motion.div>
+        ) : null}
       </motion.div>
     </div>
   );

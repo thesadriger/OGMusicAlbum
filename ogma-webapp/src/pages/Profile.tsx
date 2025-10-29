@@ -1,5 +1,6 @@
 // /src/pages/Profile.tsx
 import * as React from "react";
+import type { ComponentType } from "react";
 import PlaylistPage from "@/pages/PlaylistPage";
 import type { Track } from "@/types/types";
 import { goHome, goPlaylistHandle } from "@/lib/router";
@@ -22,33 +23,6 @@ import { formatSecondsToHMS } from "@/lib/time";
 import { useViewportPresence } from "@/hooks/useViewportPresence";
 
 // фоны
-import LiquidChrome from "@/components/backgrounds/LiquidChrome";
-import Squares from "@/components/backgrounds/Squares";
-import LetterGlitch from "@/components/backgrounds/LetterGlitch";
-import Orb from "@/components/backgrounds/Orb";
-import Ballpit from "@/components/backgrounds/Ballpit";
-import Waves from "@/components/backgrounds/Waves";
-import Iridescence from "@/components/backgrounds/Iridescence";
-import Hyperspeed from "@/components/backgrounds/Hyperspeed";
-import Threads from "@/components/backgrounds/Threads";
-import DotGrid from "@/components/backgrounds/DotGrid";
-import RippleGrid from "@/components/backgrounds/RippleGrid";
-import FaultyTerminal from "@/components/backgrounds/FaultyTerminal";
-import Dither from "@/components/backgrounds/Dither";
-import Galaxy from "@/components/backgrounds/Galaxy";
-import PrismaticBurst from "@/components/backgrounds/PrismaticBurst";
-import Lightning from "@/components/backgrounds/Lightning";
-import Beams from "@/components/backgrounds/Beams";
-import GradientBlinds from "@/components/backgrounds/GradientBlinds";
-import Particles from "@/components/backgrounds/Particles";
-import Plasma from "@/components/backgrounds/Plasma";
-import Aurora from "@/components/backgrounds/Aurora";
-import PixelBlast from "@/components/backgrounds/PixelBlast";
-import LightRays from "@/components/backgrounds/LightRays";
-import Silk from "@/components/backgrounds/Silk";
-import DarkVeil from "@/components/backgrounds/DarkVeil";
-import Prism from "@/components/backgrounds/Prism";
-import LiquidEther from "@/components/backgrounds/LiquidEther";
 
 function initials(name?: string | null, username?: string | null) {
   const src = (name || username || "").trim();
@@ -119,6 +93,38 @@ function applyAppBackgroundFromStorage() {
   window.dispatchEvent(new Event("ogma:theme-changed"));
 }
 
+type BackgroundLoader = () => Promise<{ default: ComponentType<any> }>;
+
+const backgroundLoaders: Record<string, BackgroundLoader> = {
+  LiquidChrome: () => import("@/components/backgrounds/LiquidChrome"),
+  Squares: () => import("@/components/backgrounds/Squares"),
+  LetterGlitch: () => import("@/components/backgrounds/LetterGlitch"),
+  Orb: () => import("@/components/backgrounds/Orb"),
+  Ballpit: () => import("@/components/backgrounds/Ballpit"),
+  Waves: () => import("@/components/backgrounds/Waves"),
+  Iridescence: () => import("@/components/backgrounds/Iridescence"),
+  Hyperspeed: () => import("@/components/backgrounds/Hyperspeed"),
+  Threads: () => import("@/components/backgrounds/Threads"),
+  DotGrid: () => import("@/components/backgrounds/DotGrid"),
+  RippleGrid: () => import("@/components/backgrounds/RippleGrid"),
+  FaultyTerminal: () => import("@/components/backgrounds/FaultyTerminal"),
+  Dither: () => import("@/components/backgrounds/Dither"),
+  Galaxy: () => import("@/components/backgrounds/Galaxy"),
+  PrismaticBurst: () => import("@/components/backgrounds/PrismaticBurst"),
+  Lightning: () => import("@/components/backgrounds/Lightning"),
+  Beams: () => import("@/components/backgrounds/Beams"),
+  GradientBlinds: () => import("@/components/backgrounds/GradientBlinds"),
+  Particles: () => import("@/components/backgrounds/Particles"),
+  Plasma: () => import("@/components/backgrounds/Plasma"),
+  Aurora: () => import("@/components/backgrounds/Aurora"),
+  PixelBlast: () => import("@/components/backgrounds/PixelBlast"),
+  LightRays: () => import("@/components/backgrounds/LightRays"),
+  Silk: () => import("@/components/backgrounds/Silk"),
+  DarkVeil: () => import("@/components/backgrounds/DarkVeil"),
+  Prism: () => import("@/components/backgrounds/Prism"),
+  LiquidEther: () => import("@/components/backgrounds/LiquidEther"),
+};
+
 type ProfileProps = {
   embedded?: boolean;
   onRequestExpand?: (track: Track, rect: DOMRect) => void;
@@ -152,6 +158,9 @@ export default function ProfilePage({
 
   // локальный плейлист для подсчёта чисел в модалке
   const [profileList, setProfileList] = React.useState<Track[]>([]);
+  const backgroundCacheRef = React.useRef<Record<string, ComponentType | null>>({});
+  const [headerBackgroundComponent, setHeaderBackgroundComponent] = React.useState<ComponentType | null>(null);
+  const [allowHeaderVisuals, setAllowHeaderVisuals] = React.useState(false);
 
   React.useEffect(() => {
     if (!localStorage.getItem("ogma_profile_header_bg_key")) {
@@ -161,6 +170,64 @@ export default function ProfilePage({
         window.dispatchEvent(new Event("ogma:theme-changed"));
       } catch { }
     }
+  }, []);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") {
+      setAllowHeaderVisuals(true);
+      return;
+    }
+
+    if (typeof window.matchMedia !== "function") {
+      const id = window.requestAnimationFrame(() => setAllowHeaderVisuals(true));
+      return () => window.cancelAnimationFrame(id);
+    }
+
+    const queries = [
+      window.matchMedia("(prefers-reduced-motion: reduce)"),
+      window.matchMedia("(prefers-reduced-data: reduce)"),
+    ].filter(Boolean) as MediaQueryList[];
+
+    let rafId: number | null = null;
+
+    const scheduleEnable = () => {
+      if (rafId != null) return;
+      rafId = window.requestAnimationFrame(() => {
+        setAllowHeaderVisuals(true);
+        rafId = null;
+      });
+    };
+
+    const cancelSchedule = () => {
+      if (rafId == null) return;
+      window.cancelAnimationFrame(rafId);
+      rafId = null;
+    };
+
+    const shouldReduce = () => queries.some((mq) => mq.matches);
+
+    const update = () => {
+      if (shouldReduce()) {
+        cancelSchedule();
+        setAllowHeaderVisuals(false);
+      } else {
+        setAllowHeaderVisuals(false);
+        scheduleEnable();
+      }
+    };
+
+    update();
+
+    for (const mq of queries) {
+      mq.addEventListener?.("change", update);
+    }
+
+    return () => {
+      cancelSchedule();
+      for (const mq of queries) {
+        mq.removeEventListener?.("change", update);
+      }
+    };
   }, []);
 
   // подгружаем список плейлиста и слушаем изменения
@@ -177,36 +244,6 @@ export default function ProfilePage({
     return () => window.removeEventListener("ogma:playlist-change" as any, handler as any);
   }, []);
 
-  const backgroundMap = {
-    LiquidChrome,
-    Squares,
-    LetterGlitch,
-    Orb,
-    Ballpit,
-    Waves,
-    Iridescence,
-    Hyperspeed,
-    Threads,
-    DotGrid,
-    RippleGrid,
-    FaultyTerminal,
-    Dither,
-    Galaxy,
-    PrismaticBurst,
-    Lightning,
-    Beams,
-    GradientBlinds,
-    Particles,
-    Plasma,
-    Aurora,
-    PixelBlast,
-    LightRays,
-    Silk,
-    DarkVeil,
-    Prism,
-    LiquidEther,
-  } as Record<string, React.ComponentType<any>>;
-
   // реагируем на локальные смены тем, чтобы обновить headerBgKey
   React.useEffect(() => {
     const onTheme = () => setHeaderBgKey(localStorage.getItem("ogma_profile_header_bg_key") || "");
@@ -220,6 +257,51 @@ export default function ProfilePage({
       window.removeEventListener("storage", onStorage);
     };
   }, []);
+
+  React.useEffect(() => {
+    if (!allowHeaderVisuals) {
+      setHeaderBackgroundComponent(null);
+      return;
+    }
+
+    if (!headerBgKey) {
+      setHeaderBackgroundComponent(null);
+      return;
+    }
+
+    const cache = backgroundCacheRef.current;
+    const cached = cache[headerBgKey];
+    if (cached !== undefined) {
+      setHeaderBackgroundComponent(cached);
+      return;
+    }
+
+    const loader = backgroundLoaders[headerBgKey];
+    if (!loader) {
+      cache[headerBgKey] = null;
+      setHeaderBackgroundComponent(null);
+      return;
+    }
+
+    let disposed = false;
+    setHeaderBackgroundComponent(null);
+
+    loader()
+      .then((mod) => {
+        if (disposed) return;
+        cache[headerBgKey] = mod.default;
+        setHeaderBackgroundComponent(mod.default);
+      })
+      .catch(() => {
+        if (disposed) return;
+        cache[headerBgKey] = null;
+        setHeaderBackgroundComponent(null);
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [allowHeaderVisuals, headerBgKey]);
 
   // Загрузка UI-настроек пользователя с сервера (кросс-девайс)
   React.useEffect(() => {
@@ -336,7 +418,7 @@ export default function ProfilePage({
     ref: headerRef,
     className: headerRevealClass,
     shouldRender: headerShouldRender,
-  } = useViewportPresence<HTMLDivElement>({ amount: 0.45, margin: "-25% 0px" });
+  } = useViewportPresence<HTMLDivElement>({ amount: 0.4, margin: "-45% 0px -25% 0px", freezeOnceVisible: true });
   const { ref: searchCardRef, className: searchRevealClass } = useViewportPresence<HTMLDivElement>({ amount: 0.3 });
   const { ref: playlistsRef, className: playlistsRevealClass } = useViewportPresence<HTMLDivElement>({ amount: 0.3 });
   const { ref: embedRef, className: embedRevealClass } = useViewportPresence<HTMLDivElement>({ amount: 0.3 });
@@ -368,8 +450,8 @@ export default function ProfilePage({
     );
   }
 
-  const HeaderBackground = headerBgKey ? backgroundMap[headerBgKey] : null;
-  const headerBackgroundKey = HeaderBackground ? `profile:${headerBgKey}` : "profile:fallback";
+  const HeaderBackground = headerBackgroundComponent;
+  const headerBackgroundKey = HeaderBackground && headerBgKey ? `profile:${headerBgKey}` : "profile:fallback";
 
   return (
     <div className="max-w-3xl mx-auto space-y-4 player-safe">
@@ -430,42 +512,38 @@ export default function ProfilePage({
 
         {/* Анимированный фон */}
         <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden="true">
-          {headerShouldRender
-            ? HeaderBackground
-              ? (
-                  <>
-                    <div className="absolute inset-0" key={headerBackgroundKey}>
-                      <HeaderBackground />
-                    </div>
-                    <div
-                      className="absolute inset-0 pointer-events-none"
-                      style={{
-                        background:
-                          "radial-gradient(120% 75% at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.35) 100%)",
-                      }}
-                    />
-                  </>
-                )
-              : (
-                  <>
-                    <div
-                      className="absolute -inset-24 rounded-[9999px] animate-spin [animation-duration:26s]"
-                      style={{
-                        background: "conic-gradient(#67d4d9, #5b95f7, #66daea, #5db5f7, #67d4d9)",
-                        filter: "blur(30px)",
-                        opacity: 0.55,
-                      }}
-                    />
-                    <div
-                      className="absolute inset-0 pointer-events-none"
-                      style={{
-                        background:
-                          "radial-gradient(120% 75% at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.35) 100%)",
-                      }}
-                    />
-                  </>
-                )
-            : null}
+          {allowHeaderVisuals && headerShouldRender && HeaderBackground ? (
+            <>
+              <div className="absolute inset-0" key={headerBackgroundKey}>
+                <HeaderBackground />
+              </div>
+              <div
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                  background:
+                    "radial-gradient(120% 75% at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.35) 100%)",
+                }}
+              />
+            </>
+          ) : (
+            <>
+              <div
+                className="absolute -inset-24 rounded-[9999px] animate-spin [animation-duration:26s]"
+                style={{
+                  background: "conic-gradient(#67d4d9, #5b95f7, #66daea, #5db5f7, #67d4d9)",
+                  filter: "blur(30px)",
+                  opacity: 0.55,
+                }}
+              />
+              <div
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                  background:
+                    "radial-gradient(120% 75% at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.35) 100%)",
+                }}
+              />
+            </>
+          )}
         </div>
 
         {/* Аватар */}

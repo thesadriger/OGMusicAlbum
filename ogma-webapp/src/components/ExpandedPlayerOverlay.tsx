@@ -162,9 +162,9 @@ function pickBackground(trackId: string | number | null | undefined) {
   const mode =
     (typeof window !== "undefined"
       ? (localStorage.getItem("ogma_track_bg_mode") as
-          | "random"
-          | "fixed"
-          | null)
+        | "random"
+        | "fixed"
+        | null)
       : null) ?? "random";
 
   if (mode === "fixed") {
@@ -433,11 +433,11 @@ export default function ExpandedPlayerOverlay({
     const safeBottom =
       typeof window !== "undefined" && window.visualViewport
         ? Math.max(
-            0,
-            window.innerHeight -
-              (window.visualViewport.offsetTop +
-                window.visualViewport.height)
-          )
+          0,
+          window.innerHeight -
+          (window.visualViewport.offsetTop +
+            window.visualViewport.height)
+        )
         : 0;
 
     const horizontalMargin = viewport.width >= 768 ? 64 : 24;
@@ -485,9 +485,8 @@ export default function ExpandedPlayerOverlay({
     overflow: "hidden",
     zIndex: 70,
     pointerEvents: "auto",
-    transform: `translate3d(${
-      dragState.mode === "horizontal" ? dragState.offsetX : 0
-    }px, ${dragState.mode === "vertical" ? dragState.offsetY : 0}px, 0)`,
+    transform: `translate3d(${dragState.mode === "horizontal" ? dragState.offsetX : 0
+      }px, ${dragState.mode === "vertical" ? dragState.offsetY : 0}px, 0)`,
     boxShadow: `0 34px 80px rgba(15, 18, 25, ${shadowOpacity})`,
     transition: "none",
     background: "rgba(15,15,20,0.92)",
@@ -498,8 +497,8 @@ export default function ExpandedPlayerOverlay({
       phase === "closing" && !originRect
         ? Math.max(progress, 0.02)
         : phase === "opening" && !originRect
-        ? Math.max(progress, 0.02)
-        : 1,
+          ? Math.max(progress, 0.02)
+          : 1,
   };
 
   const backdropOpacity =
@@ -672,10 +671,14 @@ export default function ExpandedPlayerOverlay({
                   ×
                 </button>
               </div>
+                <div
+                  className="pointer-events-none absolute inset-x-0 bottom-0 top-1/2 bg-gradient-to-b from-transparent via-black/50 to-black"
+                  aria-hidden="true"
+                />
 
               {/* центр (инфо трека / слайдер / контролы) */}
               <div
-                className="flex-1 flex flex-col items-center justify-end gap-5 px-5"
+                className="relative flex-1 flex flex-col items-center justify-end gap-5 px-5"
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}

@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import type { Track } from "@/types/types";
 import { fetchArtistTracks } from "@/lib/api";
 import { TrackCard } from "@/components/TrackCard";
+import AnimatedList from "@/components/AnimatedList";
 import { useContentFilter, filterTracksUniqueByTitle } from "@/hooks/useContentFilter";
 import { goArtist } from "@/lib/router";
 
@@ -106,20 +107,25 @@ export default function ArtistPage({ artist, onBack, nowId, paused, onToggleTrac
       )}
 
       {!loading && shown.length > 0 && (
-        <div className="space-y-3">
-          {shown.map((t, i) => (
-            <TrackCard
-              key={t.id}
-              t={t}
-              isActive={nowId === t.id}
-              isPaused={paused}
-              onToggle={() => onToggleTrack(shown, i, t.id)}
-              onRequestExpand={onRequestExpand}
-              hideDuringExpand={expandedTrackId === t.id}
-              onCardElementChange={onCardElementChange}
-            />
-          ))}
-        </div>
+        <AnimatedList
+          items={shown.map((t, i) => ({
+            key: t.id,
+            content: (
+              <TrackCard
+                t={t}
+                isActive={nowId === t.id}
+                isPaused={paused}
+                onToggle={() => onToggleTrack(shown, i, t.id)}
+                onRequestExpand={onRequestExpand}
+                hideDuringExpand={expandedTrackId === t.id}
+                onCardElementChange={onCardElementChange}
+              />
+            ),
+          }))}
+          listClassName="space-y-3"
+          scrollable={false}
+          showGradients={false}
+        />
       )}
     </section>
   );

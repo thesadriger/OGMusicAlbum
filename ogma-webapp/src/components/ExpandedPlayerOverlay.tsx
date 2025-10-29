@@ -626,7 +626,7 @@ export default function ExpandedPlayerOverlay({
 
               {/* центр (инфо трека / слайдер / контролы) */}
               <div
-                className="flex-1 flex flex-col items-center justify-end gap-6 px-6 pb-6"
+                className="flex-1 flex flex-col items-center justify-end gap-5 px-5 pb-5"
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
@@ -756,7 +756,7 @@ export default function ExpandedPlayerOverlay({
                   </RoundGlassButton>
                 </div>
 
-                {/* подсказки по жестам */}
+                {/* подсказки по жестам
                 <GlassSurface
                   className="w-full max-w-[480px] bg-white/8 border-white/15 text-white/80 text-sm px-4 py-3 rounded-2xl"
                   data-expanded-gesture="lock"
@@ -774,7 +774,7 @@ export default function ExpandedPlayerOverlay({
                       Свайп вниз — закрыть
                     </div>
                   </div>
-                </GlassSurface>
+                </GlassSurface> */}
               </div>
             </div>
           </div>

@@ -24,6 +24,10 @@ type ViewportPresenceOptions = {
    * Keep `shouldRender` true once the element entered viewport at least once
    */
   freezeOnceVisible?: boolean;
+  /**
+   * Callback fired when visibility state changes.
+   */
+  onVisibilityChange?: (state: { isVisible: boolean; hasEntered: boolean }) => void;
 };
 
 type PresenceClassNames = {
@@ -48,6 +52,7 @@ export function useViewportPresence<T extends HTMLElement = HTMLElement>(
     margin = "-10% 0px",
     once = false,
     freezeOnceVisible = false,
+    onVisibilityChange,
   } = options;
 
   const assignedNodeRef = useRef<T | null>(null);
@@ -56,6 +61,27 @@ export function useViewportPresence<T extends HTMLElement = HTMLElement>(
   const [isVisible, setIsVisible] = useState(false);
   const [hasEntered, setHasEntered] = useState(false);
   const hasEnteredRef = useRef(false);
+  const lastNotifiedRef = useRef<{ isVisible: boolean; hasEntered: boolean } | null>(null);
+  const lastCallbackRef = useRef<typeof onVisibilityChange>();
+
+  useEffect(() => {
+    if (!onVisibilityChange) {
+      lastNotifiedRef.current = null;
+      lastCallbackRef.current = undefined;
+      return;
+    }
+
+    const last = lastNotifiedRef.current;
+    const callbackChanged = lastCallbackRef.current !== onVisibilityChange;
+    if (!callbackChanged && last && last.isVisible === isVisible && last.hasEntered === hasEntered) {
+      return;
+    }
+
+    const snapshot = { isVisible, hasEntered } as const;
+    lastNotifiedRef.current = snapshot;
+    lastCallbackRef.current = onVisibilityChange;
+    onVisibilityChange(snapshot);
+  }, [hasEntered, isVisible, onVisibilityChange]);
 
   const setNode = useCallback((node: T | null) => {
     if (assignedNodeRef.current === node) return;

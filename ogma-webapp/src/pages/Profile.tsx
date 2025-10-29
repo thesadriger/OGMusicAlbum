@@ -19,6 +19,7 @@ import { useMe } from "@/hooks/useMe";
 import { useContentFilter, normalizeTitle } from "@/hooks/useContentFilter";
 import { usePlaylistListeningTotal } from "@/hooks/usePlaylistListeningTotal";
 import { formatSecondsToHMS } from "@/lib/time";
+import { useViewportPresence } from "@/hooks/useViewportPresence";
 
 // фоны
 import LiquidChrome from "@/components/backgrounds/LiquidChrome";
@@ -331,6 +332,15 @@ export default function ProfilePage({
     return `${listenSeconds} сек.`;
   }, [listenSeconds, listeningTotals.error]);
 
+  const {
+    ref: headerRef,
+    className: headerRevealClass,
+    shouldRender: headerShouldRender,
+  } = useViewportPresence<HTMLDivElement>({ amount: 0.45, margin: "-25% 0px" });
+  const { ref: searchCardRef, className: searchRevealClass } = useViewportPresence<HTMLDivElement>({ amount: 0.3 });
+  const { ref: playlistsRef, className: playlistsRevealClass } = useViewportPresence<HTMLDivElement>({ amount: 0.3 });
+  const { ref: embedRef, className: embedRevealClass } = useViewportPresence<HTMLDivElement>({ amount: 0.3 });
+
   /* ===== Render (после всех хуков) ===== */
 
   if (loading) {
@@ -364,7 +374,10 @@ export default function ProfilePage({
   return (
     <div className="max-w-3xl mx-auto space-y-4 player-safe">
       {/* Шапка */}
-      <div className="relative z-[100] isolate transform-gpu h-60 overflow-hidden rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/50 dark:bg-zinc-900/50 shadow">
+      <div
+        ref={headerRef}
+        className={`${headerRevealClass} relative z-[100] isolate transform-gpu h-60 overflow-hidden rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/50 dark:bg-zinc-900/50 shadow`}
+      >
         {/* dead-zones под кнопками */}
         {!embedded && (
           <>
@@ -417,28 +430,42 @@ export default function ProfilePage({
 
         {/* Анимированный фон */}
         <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden="true">
-          {HeaderBackground ? (
-            <>
-              <div className="absolute inset-0" key={headerBackgroundKey}>
-                <HeaderBackground />
-              </div>
-              <div
-                className="absolute inset-0 pointer-events-none"
-                style={{ background: "radial-gradient(120% 75% at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.35) 100%)" }}
-              />
-            </>
-          ) : (
-            <>
-              <div
-                className="absolute -inset-24 rounded-[9999px] animate-spin [animation-duration:26s]"
-                style={{ background: "conic-gradient(#67d4d9, #5b95f7, #66daea, #5db5f7, #67d4d9)", filter: "blur(30px)", opacity: 0.55 }}
-              />
-              <div
-                className="absolute inset-0 pointer-events-none"
-                style={{ background: "radial-gradient(120% 75% at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.35) 100%)" }}
-              />
-            </>
-          )}
+          {headerShouldRender
+            ? HeaderBackground
+              ? (
+                  <>
+                    <div className="absolute inset-0" key={headerBackgroundKey}>
+                      <HeaderBackground />
+                    </div>
+                    <div
+                      className="absolute inset-0 pointer-events-none"
+                      style={{
+                        background:
+                          "radial-gradient(120% 75% at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.35) 100%)",
+                      }}
+                    />
+                  </>
+                )
+              : (
+                  <>
+                    <div
+                      className="absolute -inset-24 rounded-[9999px] animate-spin [animation-duration:26s]"
+                      style={{
+                        background: "conic-gradient(#67d4d9, #5b95f7, #66daea, #5db5f7, #67d4d9)",
+                        filter: "blur(30px)",
+                        opacity: 0.55,
+                      }}
+                    />
+                    <div
+                      className="absolute inset-0 pointer-events-none"
+                      style={{
+                        background:
+                          "radial-gradient(120% 75% at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 55%, rgba(0,0,0,.35) 100%)",
+                      }}
+                    />
+                  </>
+                )
+            : null}
         </div>
 
         {/* Аватар */}
@@ -468,7 +495,10 @@ export default function ProfilePage({
       </div>
 
       {/* Поиск по плейлисту — карточка */}
-      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3">
+      <div
+        ref={searchCardRef}
+        className={`${searchRevealClass} rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3`}
+      >
         <div className="flex items-center gap-2">
           <form className="relative flex-1" onSubmit={(e) => e.preventDefault()}>
             <input
@@ -509,7 +539,10 @@ export default function ProfilePage({
       </div>
 
       {/* Мои плейлисты — карточка */}
-      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3">
+      <div
+        ref={playlistsRef}
+        className={`${playlistsRevealClass} rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3`}
+      >
         {myPlaylists.length > 0 ? (
           <div className="flex flex-col gap-2">
             {myPlaylists.map((p) => (
@@ -548,7 +581,10 @@ export default function ProfilePage({
       </div>
 
       {/* Встроенный плейлист — карточка с мягкими краями */}
-      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3">
+      <div
+        ref={embedRef}
+        className={`${embedRevealClass} rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3`}
+      >
         <PlaylistPage
           key="profile-playlist-embed"
           embedded

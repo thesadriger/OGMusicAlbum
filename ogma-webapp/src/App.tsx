@@ -30,6 +30,8 @@ import { useMe } from "@/hooks/useMe";
 import TracksCarousel from "@/components/TracksCarousel";
 import AddToPlaylistPopover from "@/components/AddToPlaylistPopover";
 import GlobalSearch from "@/components/GlobalSearch";
+import SplitText from "@/components/SplitText";
+import ShinyText from "@/components/ShinyText";
 
 type RecsResp = { items: Track[]; limit: number };
 
@@ -50,6 +52,11 @@ export default function App() {
   const rawName = (me?.name || me?.username || "").trim();
   const ownerLabel = (rawName.split(/\s+/)[0] || "").trim();
   const playlistTitle = ownerLabel ? `${ownerLabel} MusicAlbum` : "MusicAlbum";
+  const [titleAnimated, setTitleAnimated] = useState(false);
+
+  useEffect(() => {
+    setTitleAnimated(false);
+  }, [playlistTitle]);
 
   const [recs, setRecs] = useState<Track[]>([]);
   const recsShuffled = useMemo(() => {
@@ -420,11 +427,25 @@ export default function App() {
               <div className="flex items-center gap-3">
                 <button
                   onClick={goPlaylist}
-                  className="text-2xl font-bold hover:opacity-90 truncate max-w-[70vw]"
+                  className="text-2xl font-bold hover:opacity-90 max-w-[70vw]"
                   title={`Открыть плейлист: ${playlistTitle}`}
                   aria-label={`Открыть плейлист: ${playlistTitle}`}
                 >
-                  {playlistTitle}
+                  {titleAnimated ? (
+                    <ShinyText
+                      text={playlistTitle}
+                      className="truncate max-w-[70vw]"
+                    />
+                  ) : (
+                    <SplitText
+                      text={playlistTitle}
+                      className="truncate max-w-[70vw]"
+                      tag="span"
+                      textAlign="left"
+                      delay={40}
+                      onLetterAnimationComplete={() => setTitleAnimated(true)}
+                    />
+                  )}
                 </button>
               </div>
               <UserAvatar />

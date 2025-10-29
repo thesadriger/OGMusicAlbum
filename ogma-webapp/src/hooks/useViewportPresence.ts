@@ -37,6 +37,15 @@ type PresenceClassNames = {
   hidden: string;
 };
 
+type RectLike = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  width: number;
+  height: number;
+};
+
 const CLASSNAMES: PresenceClassNames = {
   base: "viewport-reveal",
   entered: "viewport-reveal--entered",
@@ -149,7 +158,7 @@ export function useViewportPresence<T extends HTMLElement = HTMLElement>(
         for (const entry of entries) {
           if (entry.target !== element) continue;
 
-          const visible = entry.isIntersecting && entry.intersectionRatio >= targetRatio;
+          const visible = isEntryVisible(entry, targetRatio);
           markVisible(visible);
 
           if (visible && persistOnEnter) {
@@ -242,21 +251,37 @@ function isElementInViewport(element: Element, ratio: number, margin: string): b
     viewportHeight
   );
 
-  const topBoundary = -marginTop;
-  const bottomBoundary = viewportHeight + marginBottom;
-  const leftBoundary = -marginLeft;
-  const rightBoundary = viewportWidth + marginRight;
+  const viewportRect = createViewportRect(
+    viewportWidth,
+    viewportHeight,
+    marginTop,
+    marginRight,
+    marginBottom,
+    marginLeft
+  );
 
-  const visibleHeight = Math.min(rect.bottom, bottomBoundary) - Math.max(rect.top, topBoundary);
-  const visibleWidth = Math.min(rect.right, rightBoundary) - Math.max(rect.left, leftBoundary);
+  return isVisibleByRectangles(
+    domRectToRectLike(rect),
+    viewportRect,
+    ratio
+  );
+}
 
-  if (visibleHeight <= 0 || visibleWidth <= 0) return false;
+function isEntryVisible(entry: IntersectionObserverEntry, ratio: number): boolean {
+  if (!entry.isIntersecting) {
+    return ratio === 0 && entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0;
+  }
 
-  const intersectionArea = visibleWidth * visibleHeight;
-  const elementArea = Math.max(rect.width * rect.height, 1);
-  const intersectionRatio = Math.max(0, Math.min(1, intersectionArea / elementArea));
+  const viewportRect = entry.rootBounds
+    ? domRectToRectLike(entry.rootBounds)
+    : getGlobalViewportRect();
 
-  return intersectionRatio >= ratio;
+  return isVisibleByRectangles(
+    domRectToRectLike(entry.boundingClientRect),
+    viewportRect,
+    ratio,
+    domRectToRectLike(entry.intersectionRect)
+  );
 }
 
 function parseRootMargin(
@@ -281,6 +306,113 @@ function parseRootMargin(
   }) as [number, number, number, number];
 
   return values;
+}
+
+function createViewportRect(
+  viewportWidth: number,
+  viewportHeight: number,
+  marginTop: number,
+  marginRight: number,
+  marginBottom: number,
+  marginLeft: number
+): RectLike {
+  const top = -marginTop;
+  const left = -marginLeft;
+  const right = viewportWidth + marginRight;
+  const bottom = viewportHeight + marginBottom;
+
+  return {
+    top,
+    left,
+    right,
+    bottom,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
+  };
+}
+
+function domRectToRectLike(rect: DOMRectReadOnly): RectLike {
+  return {
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    left: rect.left,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function getGlobalViewportRect(): RectLike {
+  if (typeof window === "undefined") {
+    return {
+      top: 0,
+      right: 1,
+      bottom: 1,
+      left: 0,
+      width: 1,
+      height: 1,
+    };
+  }
+
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+
+  return {
+    top: 0,
+    left: 0,
+    right: viewportWidth,
+    bottom: viewportHeight,
+    width: Math.max(0, viewportWidth),
+    height: Math.max(0, viewportHeight),
+  };
+}
+
+function isVisibleByRectangles(
+  elementRect: RectLike,
+  viewportRect: RectLike,
+  ratio: number,
+  intersectionOverride?: RectLike
+): boolean {
+  const intersection = intersectionOverride ?? intersectRects(elementRect, viewportRect);
+
+  if (!intersection) {
+    return false;
+  }
+
+  const intersectionArea = Math.max(0, intersection.width) * Math.max(0, intersection.height);
+  if (intersectionArea <= 0) return false;
+
+  if (ratio === 0) {
+    return intersectionArea > 0;
+  }
+
+  const elementArea = Math.max(elementRect.width * elementRect.height, 1);
+  const viewportArea = Math.max(viewportRect.width * viewportRect.height, 1);
+  const effectiveArea = Math.max(1, Math.min(elementArea, viewportArea));
+
+  const intersectionRatio = Math.max(0, Math.min(1, intersectionArea / effectiveArea));
+
+  return intersectionRatio >= ratio;
+}
+
+function intersectRects(a: RectLike, b: RectLike): RectLike | null {
+  const top = Math.max(a.top, b.top);
+  const bottom = Math.min(a.bottom, b.bottom);
+  const left = Math.max(a.left, b.left);
+  const right = Math.min(a.right, b.right);
+
+  if (bottom <= top || right <= left) {
+    return null;
+  }
+
+  return {
+    top,
+    right,
+    bottom,
+    left,
+    width: right - left,
+    height: bottom - top,
+  };
 }
 
 function normalizeMarginTokens(tokens: string[]): [string, string, string, string] {

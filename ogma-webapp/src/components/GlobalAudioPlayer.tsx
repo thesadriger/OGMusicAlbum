@@ -6,6 +6,20 @@ import { streamUrlFor } from "@/lib/api";
 import { goArtist, goPlaylist, goPlaylistHandle } from "@/lib/router";
 import GlassSurface from "@/components/GlassSurface";
 import { inPlaylist } from "@/lib/playlists";
+import {
+  usePlayerStore,
+  selectCurrentTrack,
+  selectIsPaused,
+  selectShuffle,
+  selectPauseLock,
+} from "@/store/playerStore";
+import {
+  nextTrack as nextTrackController,
+  prevTrack as prevTrackController,
+  setPaused as setPausedController,
+  setShuffle as setShuffleController,
+  setPauseLock as setPauseLockController,
+} from "@/lib/playerController";
 
 import RoundGlassButton from "@/components/RoundGlassButton";
 import {
@@ -24,29 +38,8 @@ type LastAdded =
   | null;
 
 type Props = {
-  now: Track | null;
-  paused: boolean;
-  onEnded?: () => void;
-  onPlayPauseChange?: (paused: boolean) => void;
-
-  // для медиа-кнопок
-  onPrev?: () => boolean | void;
-  onNext?: () => boolean | void;
-
-  // очередь
-  queue?: Track[];
-  currentIndex?: number;
-  onPickFromQueue?: (i: number) => void;
-
   // добавление в плейлист из плеера
   onAddToPlaylist?: (track: Track) => void;
-
-  // перемешивание
-  shuffle?: boolean;
-  onToggleShuffle?: (enabled: boolean) => void;
-
-  /** полноэкранный плеер сейчас открыт? */
-  isExpanded?: boolean;
 
   /** жестовое раскрытие в полноэкранный плеер */
   onRequestExpand?: (track: Track, originRect: DOMRect) => void;
@@ -164,27 +157,41 @@ const fmt = (s: number) => {
 };
 
 
-export default function GlobalAudioPlayer({
-  now,
-  paused,
-  onEnded,
-  onPlayPauseChange,
-  onPrev,
-  onNext,
-  queue = [],
-  currentIndex = -1,
-  onPickFromQueue,
-  onAddToPlaylist,
-  shuffle = false,
-  onToggleShuffle,
-  isExpanded = false,
-  onRequestExpand,
-}: Props) {
+export default function GlobalAudioPlayer({ onAddToPlaylist, onRequestExpand }: Props) {
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
   const expandSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const expandHoldTimerRef = React.useRef<number | null>(null);
   const expandPointerRef = React.useRef<{ x: number; y: number } | null>(null);
   const expandPointerIdRef = React.useRef<number | null>(null);
+
+  const now = usePlayerStore(selectCurrentTrack);
+  const paused = usePlayerStore(selectIsPaused);
+  const shuffle = usePlayerStore(selectShuffle);
+  const isExpanded = usePlayerStore((state) => state.expanded.phase !== "closed");
+  const pauseLock = usePlayerStore(selectPauseLock);
+
+  const handlePrev = React.useCallback(() => {
+    prevTrackController(false);
+  }, []);
+
+  const handleNext = React.useCallback(() => {
+    nextTrackController(false);
+  }, []);
+
+  const handleShuffleToggle = React.useCallback(() => {
+    setShuffleController(!shuffle);
+  }, [shuffle]);
+
+  const handleEnded = React.useCallback(() => {
+    if (pauseLock) {
+      setPausedController(true);
+      return;
+    }
+    const next = nextTrackController(false);
+    if (!next) {
+      setPausedController(true);
+    }
+  }, [pauseLock]);
 
   const cancelExpandHold = React.useCallback(() => {
     if (expandHoldTimerRef.current != null) {
@@ -473,7 +480,7 @@ export default function GlobalAudioPlayer({
         const p = a.play();
         if (p && typeof (p as any).then === "function") await p;
         if (req !== playRequestIdRef.current) return;
-        requestAnimationFrame(() => onPlayPauseChange?.(false));
+        requestAnimationFrame(() => setPausedController(false));
       } catch (e: any) {
         const msg = String(e?.message || "");
         if (e?.name === "AbortError" || msg.includes("interrupted by a call to pause")) return;
@@ -491,7 +498,7 @@ export default function GlobalAudioPlayer({
       try { delete (window as any).__ogmaPause; } catch { }
       try { delete (window as any).__ogmaGetAudio; } catch { }
     };
-  }, [onPlayPauseChange]);
+  }, []);
 
   // === реакция на входящие пропсы now/paused ===
   React.useEffect(() => {
@@ -525,14 +532,14 @@ export default function GlobalAudioPlayer({
         if (p && typeof (p as any).then === "function") await p;
         if (req !== playRequestIdRef.current) return;
 
-        requestAnimationFrame(() => onPlayPauseChange?.(false));
+        requestAnimationFrame(() => setPausedController(false));
       } catch (e: any) {
         const msg = String(e?.message || "");
         if (e?.name !== "AbortError" && !msg.includes("interrupted by a call to pause")) {
           console.warn("__ogmaPlay failed:", e);
         }
         setError("Не удалось воспроизвести трек");
-        requestAnimationFrame(() => onPlayPauseChange?.(true));
+        requestAnimationFrame(() => setPausedController(true));
       }
     })();
 
@@ -545,16 +552,26 @@ export default function GlobalAudioPlayer({
           album: "OGMA",
         });
         // @ts-ignore
-        navigator.mediaSession.setActionHandler?.("previoustrack", onPrev || null);
+        navigator.mediaSession.setActionHandler?.("previoustrack", handlePrev);
         // @ts-ignore
-        navigator.mediaSession.setActionHandler?.("nexttrack", onNext || null);
+        navigator.mediaSession.setActionHandler?.("nexttrack", handleNext);
         // @ts-ignore
-        navigator.mediaSession.setActionHandler?.("play", async () => { try { await a.play(); onPlayPauseChange?.(false); } catch { } });
+        navigator.mediaSession.setActionHandler?.("play", async () => {
+          try {
+            await a.play();
+            setPausedController(false);
+            setPauseLockController(false);
+          } catch { }
+        });
         // @ts-ignore
-        navigator.mediaSession.setActionHandler?.("pause", () => { a.pause(); onPlayPauseChange?.(true); });
+        navigator.mediaSession.setActionHandler?.("pause", () => {
+          a.pause();
+          setPausedController(true);
+          setPauseLockController(true);
+        });
       }
     } catch { }
-  }, [now, paused, onPlayPauseChange, onPrev, onNext]);
+  }, [now, paused, handlePrev, handleNext]);
 
   // === слушаем события тега <audio> ===
   React.useEffect(() => {
@@ -565,9 +582,12 @@ export default function GlobalAudioPlayer({
       setDuration(d);
       if (d > 0 && isFinite(d)) setProgress(a.currentTime / d);
     };
-    const onPlay = () => onPlayPauseChange?.(false);
-    const onPause = () => onPlayPauseChange?.(true);
-    const onEndedWrap = () => { setProgress(1); onEnded?.(); };
+    const onPlay = () => setPausedController(false);
+    const onPause = () => setPausedController(true);
+    const onEndedWrap = () => {
+      setProgress(1);
+      handleEnded();
+    };
     const onError = () =>
       setError(a.error ? `Ошибка воспроизведения (код ${a.error.code})` : "Ошибка воспроизведения");
     const onLoadedMeta = () => setDuration(a.duration || 0);
@@ -586,7 +606,7 @@ export default function GlobalAudioPlayer({
       a.removeEventListener("error", onError);
       a.removeEventListener("loadedmetadata", onLoadedMeta);
     };
-  }, [onEnded, onPlayPauseChange]);
+  }, [handleEnded]);
 
   /** Промотка по проценту */
   const seekTo = (pct: number) => {
@@ -740,7 +760,7 @@ export default function GlobalAudioPlayer({
                 size={36}
                 ariaLabel={shuffle ? "Перемешивание: включено" : "Перемешивание: выключено"}
                 title="Перемешать"
-                onClick={() => onToggleShuffle?.(!shuffle)}
+                onClick={handleShuffleToggle}
               >
                 <div className={shuffle ? "text-white" : "text-white/70"}>
                   <IconShuffle />
@@ -753,7 +773,7 @@ export default function GlobalAudioPlayer({
                 disabled={!now}
                 onPointerDown={(e) => {
                   e.preventDefault();
-                  onPrev?.();
+                  handlePrev();
                 }}
               >
                 <IconPrevNew />
@@ -771,11 +791,13 @@ export default function GlobalAudioPlayer({
                     try {
                       ensureInline(a);
                       await a.play();
-                      onPlayPauseChange?.(false);
+                      setPausedController(false);
+                      setPauseLockController(false);
                     } catch { }
                   } else {
                     a.pause();
-                    onPlayPauseChange?.(true);
+                    setPausedController(true);
+                    setPauseLockController(true);
                   }
                 }}
               >
@@ -788,7 +810,7 @@ export default function GlobalAudioPlayer({
                 disabled={!now}
                 onPointerDown={(e) => {
                   e.preventDefault();
-                  onNext?.();
+                  handleNext();
                 }}
               >
                 <IconNextNew />

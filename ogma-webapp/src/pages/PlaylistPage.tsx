@@ -1,37 +1,43 @@
 // /src/pages/PlaylistPage.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import type { Track } from "@/types/types";
 import { TrackCard } from "@/components/TrackCard";
 import AnimatedList from "@/components/AnimatedList";
 import { getPlaylist } from "@/lib/playlists";
 import { useContentFilter, filterTracksUniqueByTitle } from "@/hooks/useContentFilter";
+import {
+  usePlayerStore,
+  selectCurrentTrackId,
+  selectIsPaused,
+  selectExpandedTrackId,
+} from "@/store/playerStore";
+import { toggleTrack as toggleTrackController } from "@/lib/playerController";
 
 export default function PlaylistPage({
   onBack,
-  nowId,
-  paused,
-  onToggleTrack,
   embedded = false,
   q = "",
   onRequestExpand,
-  expandedTrackId,
   onCardElementChange,
 }: {
   onBack: () => void;
-  nowId: string | null;
-  paused: boolean;
-  onToggleTrack: (list: Track[], startIndex: number, trackId: string) => void;
   embedded?: boolean;
   q?: string;
   onRequestExpand?: (track: Track, rect: DOMRect) => void;
-  expandedTrackId?: string | null;
   onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 }) {
+  const nowId = usePlayerStore(selectCurrentTrackId);
+  const paused = usePlayerStore(selectIsPaused);
+  const expandedTrackId = usePlayerStore(selectExpandedTrackId);
   const [list, setList] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
 
   // выбранный артист (внутренняя «страница» в секции)
   const [pickedArtist, setPickedArtist] = useState<string | null>(null);
+
+  const toggleFromList = useCallback((tracks: Track[], index: number) => {
+    toggleTrackController(tracks, index, tracks[index]?.id);
+  }, []);
 
   const refresh = () => {
     setLoading(true);
@@ -181,7 +187,7 @@ export default function PlaylistPage({
                     t={t}
                     isActive={nowId === t.id}
                     isPaused={paused}
-                    onToggle={() => onToggleTrack(tracksOfPicked, i, t.id)}
+                    onToggle={() => toggleFromList(tracksOfPicked, i)}
                     mode="playlist"
                     onRequestExpand={onRequestExpand}
                     hideDuringExpand={expandedTrackId === t.id}
@@ -207,7 +213,7 @@ export default function PlaylistPage({
                 t={t}
                 isActive={nowId === t.id}
                 isPaused={paused}
-                onToggle={() => onToggleTrack(filtered, i, t.id)}
+                onToggle={() => toggleFromList(filtered, i)}
                 mode="playlist"
                 onRequestExpand={onRequestExpand}
                 hideDuringExpand={expandedTrackId === t.id}

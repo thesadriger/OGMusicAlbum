@@ -733,7 +733,7 @@ export default function ExpandedPlayerOverlay({
 
                   {/* блок кнопок управления */}
                   <div
-                    className="w-full max-w-[520px] flex items-center justify-between gap-6"
+                    className="w-full max-w-[520px] flex items-center justify-between gap-3"
                     data-expanded-gesture="lock"
                   >
                     {/* Shuffle */}

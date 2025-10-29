@@ -67,6 +67,7 @@ interface AnimatedListProps {
 }
 
 const DEFAULT_DELAY = 0.05;
+const MAX_ANIMATION_DELAY = 0.6;
 
 const AnimatedList: React.FC<AnimatedListProps> = ({
   items,
@@ -177,25 +178,28 @@ const AnimatedList: React.FC<AnimatedListProps> = ({
             : undefined
         }
       >
-        {items.map((item, index) => (
-          <AnimatedItem
-            key={item.key}
-            delay={baseDelay * index}
-            index={index}
-            onMouseEnter={(event) => {
-              setSelectedIndex(index);
-              item.onMouseEnter?.(event);
-            }}
-            onClick={(event) => {
-              setSelectedIndex(index);
-              onItemSelect?.(item, index);
-              item.onClick?.(event);
-            }}
-            className={`${itemClassName} ${index === selectedIndex ? selectedItemClassName : ""} ${item.className ?? ""}`.trim()}
-          >
-            {item.content}
-          </AnimatedItem>
-        ))}
+        {items.map((item, index) => {
+          const delay = Math.min(baseDelay * index, MAX_ANIMATION_DELAY);
+          return (
+            <AnimatedItem
+              key={item.key}
+              delay={delay}
+              index={index}
+              onMouseEnter={(event) => {
+                setSelectedIndex(index);
+                item.onMouseEnter?.(event);
+              }}
+              onClick={(event) => {
+                setSelectedIndex(index);
+                onItemSelect?.(item, index);
+                item.onClick?.(event);
+              }}
+              className={`${itemClassName} ${index === selectedIndex ? selectedItemClassName : ""} ${item.className ?? ""}`.trim()}
+              >
+                {item.content}
+              </AnimatedItem>
+            );
+          })}
       </div>
       {scrollable && showGradients && (
         <>

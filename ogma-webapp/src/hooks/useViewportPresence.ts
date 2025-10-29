@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { MutableRefObject, RefObject } from "react";
 
 type ViewportPresenceOptions = {
   /**
@@ -36,40 +43,77 @@ const CLASSNAMES: PresenceClassNames = {
 export function useViewportPresence<T extends HTMLElement = HTMLElement>(
   options: ViewportPresenceOptions = {}
 ) {
-  const { amount = 0.3, margin = "-10% 0px", once = false, freezeOnceVisible = false } = options;
-  const ref = useRef<T | null>(null);
+  const {
+    amount = 0.3,
+    margin = "-10% 0px",
+    once = false,
+    freezeOnceVisible = false,
+  } = options;
+
+  const assignedNodeRef = useRef<T | null>(null);
+  const externalRef = useRef<MutableRefObject<T | null> | null>(null);
+  const [observedNode, setObservedNode] = useState<T | null>(null);
   const [isVisible, setIsVisible] = useState(false);
   const [hasEntered, setHasEntered] = useState(false);
+  const hasEnteredRef = useRef(false);
+
+  const setNode = useCallback((node: T | null) => {
+    if (assignedNodeRef.current === node) return;
+    assignedNodeRef.current = node;
+    setObservedNode(node);
+  }, []);
+
+  if (!externalRef.current) {
+    externalRef.current = createMutableRef(assignedNodeRef, setNode);
+  }
+  const ref = externalRef.current!;
 
   const targetRatio = normalizeAmount(amount);
-  const thresholds = useMemo(() => {
-    const base = [0, targetRatio].filter((value, index, array) => array.indexOf(value) === index);
-    return base.sort((a, b) => a - b);
-  }, [targetRatio]);
+  const thresholds = useMemo(() => createThresholdList(targetRatio), [targetRatio]);
 
   useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
+    const element = observedNode;
+    const persistOnEnter = once || freezeOnceVisible;
+
+    if (!element) {
+      setIsVisible(false);
+      if (!persistOnEnter) {
+        hasEnteredRef.current = false;
+        setHasEntered(false);
+      }
+      return;
+    }
+
+    if (persistOnEnter && hasEnteredRef.current) {
+      setHasEntered(true);
+      setIsVisible(true);
+      return;
+    }
 
     let disposed = false;
 
     const markVisible = (visible: boolean) => {
       if (disposed) return;
-      setIsVisible(visible);
-      if (visible) {
+
+      const shouldStayVisible = persistOnEnter && hasEnteredRef.current;
+      const nextVisible = visible || shouldStayVisible;
+
+      setIsVisible((prev) => (prev === nextVisible ? prev : nextVisible));
+
+      if (visible && !hasEnteredRef.current) {
+        hasEnteredRef.current = true;
         setHasEntered(true);
       }
     };
 
-    // Fallback — если IntersectionObserver недоступен или элемент уже в области видимости
-    if (typeof window === "undefined" || !("IntersectionObserver" in window)) {
+    if (!supportsIntersectionObserver()) {
       markVisible(true);
       return;
     }
 
-    if (isElementInViewport(element, targetRatio)) {
+    if (isElementInViewport(element, targetRatio, margin)) {
       markVisible(true);
-      if (once) {
+      if (persistOnEnter) {
         return;
       }
     }
@@ -77,9 +121,12 @@ export function useViewportPresence<T extends HTMLElement = HTMLElement>(
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
+          if (entry.target !== element) continue;
+
           const visible = entry.isIntersecting && entry.intersectionRatio >= targetRatio;
           markVisible(visible);
-          if (visible && once) {
+
+          if (visible && persistOnEnter) {
             observer.unobserve(entry.target);
           }
         }
@@ -97,7 +144,7 @@ export function useViewportPresence<T extends HTMLElement = HTMLElement>(
       disposed = true;
       observer.disconnect();
     };
-  }, [margin, once, targetRatio, thresholds]);
+  }, [freezeOnceVisible, margin, observedNode, once, targetRatio, thresholds]);
 
   const className = useMemo(
     () =>
@@ -119,7 +166,7 @@ export function useViewportPresence<T extends HTMLElement = HTMLElement>(
     hasEntered,
     className,
     shouldRender,
-  };
+  } as const;
 }
 
 function normalizeAmount(amount: ViewportPresenceOptions["amount"]): number {
@@ -129,7 +176,32 @@ function normalizeAmount(amount: ViewportPresenceOptions["amount"]): number {
   return Number.isFinite(clamped) ? clamped : 0;
 }
 
-function isElementInViewport(element: Element, ratio: number) {
+function supportsIntersectionObserver(): boolean {
+  return typeof window !== "undefined" && "IntersectionObserver" in window;
+}
+
+function createMutableRef<T extends HTMLElement>(
+  source: RefObject<T>,
+  assign: (node: T | null) => void
+): MutableRefObject<T | null> {
+  const refObject = { current: source.current } as MutableRefObject<T | null>;
+
+  Object.defineProperty(refObject, "current", {
+    configurable: false,
+    enumerable: true,
+    get: () => source.current ?? null,
+    set: (node: T | null) => assign(node),
+  });
+
+  return refObject;
+}
+
+function createThresholdList(ratio: number): number[] {
+  const values = new Set([0, ratio, 1]);
+  return Array.from(values).sort((a, b) => a - b);
+}
+
+function isElementInViewport(element: Element, ratio: number, margin: string): boolean {
   if (typeof window === "undefined") return true;
 
   const rect = element.getBoundingClientRect();
@@ -138,15 +210,77 @@ function isElementInViewport(element: Element, ratio: number) {
 
   if (viewportHeight === 0 || viewportWidth === 0) return true;
 
-  const visibleHeight = Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0);
-  const visibleWidth = Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0);
+  const [marginTop, marginRight, marginBottom, marginLeft] = parseRootMargin(
+    margin,
+    viewportWidth,
+    viewportHeight
+  );
+
+  const topBoundary = -marginTop;
+  const bottomBoundary = viewportHeight + marginBottom;
+  const leftBoundary = -marginLeft;
+  const rightBoundary = viewportWidth + marginRight;
+
+  const visibleHeight = Math.min(rect.bottom, bottomBoundary) - Math.max(rect.top, topBoundary);
+  const visibleWidth = Math.min(rect.right, rightBoundary) - Math.max(rect.left, leftBoundary);
 
   if (visibleHeight <= 0 || visibleWidth <= 0) return false;
 
-  const heightRatio = visibleHeight / (rect.height || 1);
-  const widthRatio = visibleWidth / (rect.width || 1);
-
-  const intersectionRatio = Math.max(0, Math.min(heightRatio, widthRatio));
+  const intersectionArea = visibleWidth * visibleHeight;
+  const elementArea = Math.max(rect.width * rect.height, 1);
+  const intersectionRatio = Math.max(0, Math.min(1, intersectionArea / elementArea));
 
   return intersectionRatio >= ratio;
+}
+
+function parseRootMargin(
+  margin: string,
+  viewportWidth: number,
+  viewportHeight: number
+): [number, number, number, number] {
+  const tokens = margin
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (tokens.length === 0) {
+    return [0, 0, 0, 0];
+  }
+
+  const normalizedTokens = normalizeMarginTokens(tokens);
+
+  const values = normalizedTokens.map((token, index) => {
+    const size = index % 2 === 0 ? viewportHeight : viewportWidth;
+    return parseMarginValue(token, size);
+  }) as [number, number, number, number];
+
+  return values;
+}
+
+function normalizeMarginTokens(tokens: string[]): [string, string, string, string] {
+  if (tokens.length === 1) {
+    return [tokens[0], tokens[0], tokens[0], tokens[0]];
+  }
+  if (tokens.length === 2) {
+    return [tokens[0], tokens[1], tokens[0], tokens[1]];
+  }
+  if (tokens.length === 3) {
+    return [tokens[0], tokens[1], tokens[2], tokens[1]];
+  }
+  return [tokens[0], tokens[1], tokens[2], tokens[3]];
+}
+
+function parseMarginValue(value: string, size: number): number {
+  const match = value.match(/(-?\d*\.?\d+)(px|%)?/i);
+  if (!match) return 0;
+
+  const numeric = Number(match[1]);
+  if (!Number.isFinite(numeric)) return 0;
+
+  const unit = match[2]?.toLowerCase();
+  if (unit === "%") {
+    return (numeric / 100) * size;
+  }
+
+  return numeric;
 }

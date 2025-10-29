@@ -34,6 +34,50 @@ type Props = {
   // перемешивание
   shuffle?: boolean;
   onToggleShuffle?: (enabled: boolean) => void;
+
+  /** жестовое раскрытие в полноэкранный плеер */
+  onRequestExpand?: (track: Track, originRect: DOMRect) => void;
+};
+
+const EXPAND_HOLD_MS = 450;
+const EXPAND_CANCEL_PX = 12;
+const INTERACTIVE_SELECTOR = [
+  "button",
+  "a",
+  "input",
+  "textarea",
+  "select",
+  "label",
+  '[role="button"]',
+  '[role="link"]',
+  "[data-player-interactive]",
+  "[data-no-expand]",
+].join(",");
+
+const triggerHapticImpact = (
+  kind: "light" | "medium" | "heavy" | "soft" | "rigid" = "medium"
+) => {
+  if (typeof window === "undefined") return;
+  try {
+    const wa = (window as any)?.Telegram?.WebApp;
+    const ok =
+      !!wa?.HapticFeedback &&
+      (typeof wa?.isVersionAtLeast === "function"
+        ? wa.isVersionAtLeast("6.1")
+        : parseFloat(wa?.version || "0") >= 6.1);
+    if (ok) {
+      wa.HapticFeedback.impactOccurred(kind);
+      return;
+    }
+  } catch { }
+  try {
+    window.navigator?.vibrate?.(20);
+  } catch { }
+};
+
+const isInteractiveTarget = (target: EventTarget | null) => {
+  if (!(target instanceof Element)) return false;
+  return target.closest(INTERACTIVE_SELECTOR) != null;
 };
 
 /** Разрешаем проигрывание инлайн (iOS) */
@@ -294,8 +338,94 @@ export default function GlobalAudioPlayer({
   onAddToPlaylist,
   shuffle = false,
   onToggleShuffle,
+  onRequestExpand,
 }: Props) {
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
+  const expandSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+  const expandHoldTimerRef = React.useRef<number | null>(null);
+  const expandPointerRef = React.useRef<{ x: number; y: number } | null>(null);
+  const expandPointerIdRef = React.useRef<number | null>(null);
+
+  const cancelExpandHold = React.useCallback(() => {
+    if (expandHoldTimerRef.current != null) {
+      clearTimeout(expandHoldTimerRef.current);
+      expandHoldTimerRef.current = null;
+    }
+  }, []);
+
+  React.useEffect(() => cancelExpandHold, [cancelExpandHold]);
+
+  React.useEffect(() => {
+    cancelExpandHold();
+    expandPointerRef.current = null;
+    expandPointerIdRef.current = null;
+  }, [cancelExpandHold, now?.id]);
+
+  const handleExpandPointerDown = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!onRequestExpand || !now) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (isInteractiveTarget(e.target)) return;
+
+      cancelExpandHold();
+      expandPointerRef.current = { x: e.clientX, y: e.clientY };
+      expandPointerIdRef.current = e.pointerId;
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      expandHoldTimerRef.current = window.setTimeout(() => {
+        expandHoldTimerRef.current = null;
+        if (!expandSurfaceRef.current || !onRequestExpand || !now) return;
+        try {
+          const rect = expandSurfaceRef.current.getBoundingClientRect();
+          onRequestExpand(now, rect);
+          triggerHapticImpact("medium");
+        } catch { }
+      }, EXPAND_HOLD_MS);
+    },
+    [cancelExpandHold, now, onRequestExpand]
+  );
+
+  const handleExpandPointerMove = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!expandPointerRef.current) return;
+      const dx = Math.abs(e.clientX - expandPointerRef.current.x);
+      const dy = Math.abs(e.clientY - expandPointerRef.current.y);
+      if (dx > EXPAND_CANCEL_PX || dy > EXPAND_CANCEL_PX) {
+        cancelExpandHold();
+        if (expandPointerIdRef.current != null) {
+          e.currentTarget.releasePointerCapture?.(expandPointerIdRef.current);
+        }
+        expandPointerRef.current = null;
+        expandPointerIdRef.current = null;
+      }
+    },
+    [cancelExpandHold]
+  );
+
+  const resetExpandState = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      cancelExpandHold();
+      if (expandPointerIdRef.current != null) {
+        e.currentTarget.releasePointerCapture?.(expandPointerIdRef.current);
+      }
+      expandPointerRef.current = null;
+      expandPointerIdRef.current = null;
+    },
+    [cancelExpandHold]
+  );
+
+  const handleExpandPointerUp = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      resetExpandState(e);
+    },
+    [resetExpandState]
+  );
+
+  const handleExpandPointerCancel = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      resetExpandState(e);
+    },
+    [resetExpandState]
+  );
 
   // состояние прогресса/длительности/ошибки
   const [progress, setProgress] = React.useState(0);
@@ -642,13 +772,26 @@ export default function GlobalAudioPlayer({
         <div className="w-full px-2 sm:px-4 pt-2 flex justify-center pointer-events-auto touch-pan-y">
           <div className="w-full max-w-[940px] flex flex-col items-center gap-2">
             {/* 1-я строка: плеер (инфо + таймлайн) */}
-            <GlassSurface
-              borderRadius={28}
-              backgroundOpacity={0.22}
-              saturation={1.8}
-              className="w-full text-white"
+            <div
+              ref={expandSurfaceRef}
+              className="w-full"
+              onPointerDown={handleExpandPointerDown}
+              onPointerMove={handleExpandPointerMove}
+              onPointerUp={handleExpandPointerUp}
+              onPointerCancel={handleExpandPointerCancel}
+              onPointerLeave={(e) => {
+                if (expandPointerRef.current) {
+                  resetExpandState(e);
+                }
+              }}
             >
-              <div className="mx-auto w-full max-w-[640px] px-4 sm:px-5 py-3 sm:py-3.5 flex flex-col gap-3">
+              <GlassSurface
+                borderRadius={28}
+                backgroundOpacity={0.22}
+                saturation={1.8}
+                className="w-full text-white"
+              >
+                <div className="mx-auto w-full max-w-[640px] px-4 sm:px-5 py-3 sm:py-3.5 flex flex-col gap-3">
                 {/* Заголовок/Артист слева + кнопка «Артист» справа */}
                 <div className="w-full flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1 text-left">
@@ -707,7 +850,7 @@ export default function GlobalAudioPlayer({
                     <div className="w-12 text-[12px] tabular-nums opacity-90">
                       {fmt(currentSec)}
                     </div>
-                    <div className="flex-1">
+                    <div className="flex-1" data-player-interactive>
                       <ElasticSlider
                         value={(progress || 0) * 100}
                         startingValue={0}
@@ -741,6 +884,7 @@ export default function GlobalAudioPlayer({
                 </audio>
               </div>
             </GlassSurface>
+          </div>
 
             {/* 2-я строка: кнопки управления */}
             <div className="w-full max-w-[640px] flex items-center justify-center gap-6 py-1">

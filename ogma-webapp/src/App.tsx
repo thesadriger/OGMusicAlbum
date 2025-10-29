@@ -680,6 +680,7 @@ export default function App() {
           }}
           onPrev={() => prev(false)}
           onNext={() => next(false)}
+          onRequestExpand={handleRequestExpand}
           queue={queue}
           currentIndex={qIndex}
           onPickFromQueue={(i) => {

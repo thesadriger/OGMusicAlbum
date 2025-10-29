@@ -8,4 +8,5 @@ export type ScrubCallbacks = {
   onScrubProgress: (pct: number) => void;
   onScrubEnd: () => void;
   onHapticImpact: (kind: ImpactKind) => void;
+  shouldSuppressHold?: () => boolean;
 };

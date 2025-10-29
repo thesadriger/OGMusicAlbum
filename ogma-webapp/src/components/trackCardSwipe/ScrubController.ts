@@ -44,6 +44,10 @@ export class ScrubController {
       return;
     }
     this.holdTimer = window.setTimeout(() => {
+      if (this.callbacks.shouldSuppressHold?.()) {
+        this.cancelHold();
+        return;
+      }
       const width = Math.max(1, payload.rect.width);
       this.scrubbing = true;
       this.start = { pct: clamp(payload.initialPct, 0, 1), x: payload.x, width };

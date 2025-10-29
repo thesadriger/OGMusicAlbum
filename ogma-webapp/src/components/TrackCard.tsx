@@ -45,6 +45,7 @@ import {
 } from "@/components/trackCardSwipe/SwipeController";
 import { ScrubController } from "@/components/trackCardSwipe/ScrubController";
 import type { SwipeReleaseDecision } from "@/components/trackCardSwipe/SwipeController";
+import { useViewportPresence } from "@/hooks/useViewportPresence";
 
 type Props = {
   t: Track;
@@ -189,6 +190,14 @@ export function TrackCard({
         toast === "sending" || toast === "sent" ? "bg-blue-600/85" : "bg-black/70";
 
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const { ref: presenceRef, className: presenceClassName, isVisible: cardInView } = useViewportPresence<HTMLDivElement>({
+    amount: 0.35,
+    margin: "-20% 0px",
+  });
+  const setCardRef = useCallback((node: HTMLDivElement | null) => {
+    cardRef.current = node;
+    presenceRef.current = node;
+  }, [presenceRef]);
   const fullPullPxRef = useRef(120);
   const pivotYRef = useRef(50);
 
@@ -871,7 +880,6 @@ export function TrackCard({
       )}
 
       <div
-        ref={cardRef}
         role="button"
         tabIndex={0}
         aria-pressed={!!isActive && !isPaused}
@@ -892,6 +900,7 @@ export function TrackCard({
             settleState({ dx: 0, anim: "snap", leftOpen: false });
           }
         }}
+        ref={setCardRef}
         style={{
           ...style,
           userSelect: "none",
@@ -899,7 +908,7 @@ export function TrackCard({
           WebkitTouchCallout: "none",
         }}
         className={
-          "relative z-10 cursor-pointer rounded-2xl p-4 shadow bg-white dark:bg-zinc-900 " +
+          `${presenceClassName} relative z-10 cursor-pointer rounded-2xl p-4 shadow bg-white dark:bg-zinc-900 ` +
           "border border-zinc-200 dark:border-zinc-800 overflow-hidden select-none " +
           (isActive
             ? isPaused
@@ -909,7 +918,7 @@ export function TrackCard({
         }
       >
         {/* Фоновая анимация + прогресс-плёнка */}
-        {isActive && (
+        {isActive && cardInView && (
           <div className="absolute inset-0 z-0 pointer-events-none">
             <div className="absolute inset-0 pointer-events-none opacity-70">
               <BackgroundComp
@@ -931,7 +940,7 @@ export function TrackCard({
         )}
 
         {/* Обводка активного трека */}
-        {isActive && (
+        {isActive && cardInView && (
           <GradientRing
             className="absolute inset-0 z-10"
             radius={16}

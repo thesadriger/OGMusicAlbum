@@ -54,3 +54,25 @@
     scroll-padding-bottom: calc(var(--ogma-player-h, 72px) + env(safe-area-inset-bottom) + 16px);
   }
 }
+
+/* Глобальная анимация появления/исчезновения элементов */
+.viewport-reveal {
+  opacity: 0;
+  filter: blur(18px);
+  transition: opacity 380ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 480ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, filter;
+}
+
+.viewport-reveal--entered {
+  will-change: opacity, filter;
+}
+
+.viewport-reveal--visible {
+  opacity: 1;
+  filter: none;
+}
+
+.viewport-reveal--hidden {
+  /* оставляем pointer-events для корректного взаимодействия на границе области */
+}

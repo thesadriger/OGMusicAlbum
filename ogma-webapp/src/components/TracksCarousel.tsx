@@ -3,6 +3,7 @@ import type { Track } from "@/types/types";
 import { motion, PanInfo, useMotionValue, useTransform } from "motion/react";
 import { usePlayerStore, selectCurrentTrackId, selectIsPaused } from "@/store/playerStore";
 import { toggleTrack as toggleTrackController } from "@/lib/playerController";
+import { useViewportPresence } from "@/hooks/useViewportPresence";
 
 // фоны
 import LiquidChrome from "@/components/backgrounds/LiquidChrome";
@@ -67,6 +68,9 @@ export default function TracksCarousel({
   autoplayDelay = 3500,
   loop = true,
 }: Props) {
+  const { ref: viewportRef, className: viewportClassName, isVisible } = useViewportPresence<HTMLDivElement>({
+    amount: 0.25,
+  });
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerW, setContainerW] = useState<number>(760);
   const [idx, setIdx] = useState(0);
@@ -122,12 +126,12 @@ export default function TracksCarousel({
 
   // автопрокрутка
   useEffect(() => {
-    if (!autoPlayEnabled || tracks.length <= 1) return;
+    if (!autoPlayEnabled || tracks.length <= 1 || !isVisible) return;
     const t = setInterval(() => {
       setIdx((prev) => (prev >= tracks.length - 1 ? (loop ? 0 : prev) : prev + 1));
     }, autoplayDelay);
     return () => clearInterval(t);
-  }, [autoPlayEnabled, autoplayDelay, loop, tracks.length]);
+  }, [autoPlayEnabled, autoplayDelay, loop, tracks.length, isVisible]);
 
   // drag-навигация
   const handleDragEnd = (_: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
@@ -174,7 +178,10 @@ export default function TracksCarousel({
   const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   return (
-    <section className="relative rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3 overflow-hidden shadow">
+    <section
+      ref={viewportRef}
+      className={`${viewportClassName} relative rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3 overflow-hidden shadow`}
+    >
       <div className="mb-2 flex items-center justify-between px-1">
         <div className="text-sm text-zinc-500">{title}</div>
 
@@ -281,7 +288,7 @@ export default function TracksCarousel({
                 style={{ width: cardW, rotateY, transformStyle: "preserve-3d", backgroundColor: "transparent" }}
               >
                 <div className="absolute inset-0 pointer-events-none z-0">
-                  {shouldRenderBg ? (
+                  {isVisible && shouldRenderBg ? (
                     // фон явно занимает всю карточку
                     <Bg className="absolute inset-0 w-full h-full" {...bgExtra} />
                   ) : (

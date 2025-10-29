@@ -31,6 +31,7 @@ import AddToPlaylistPopover from "@/components/AddToPlaylistPopover";
 import GlobalSearch from "@/components/GlobalSearch";
 import ShinyText from "@/components/ShinyText";
 import ExpandedPlayerOverlay from "@/components/ExpandedPlayerOverlay";
+import { useViewportPresence } from "@/hooks/useViewportPresence";
 import {
   playList as playListController,
   nextTrack,
@@ -286,6 +287,17 @@ export default function App() {
 
   const isProfile = route.name === "profile";
 
+  const { ref: headerRevealRef, className: headerRevealClass } = useViewportPresence<HTMLDivElement>({
+    amount: 0.5,
+    margin: "-15% 0px",
+  });
+  const { ref: searchRevealRef, className: searchRevealClass } = useViewportPresence<HTMLDivElement>({
+    amount: 0.35,
+  });
+  const { ref: homeSectionRef, className: homeRevealClass } = useViewportPresence<HTMLDivElement>({
+    amount: 0.3,
+  });
+
   return (
     <AuthGate>
       <div className="no-select min-h-screen pb-28 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
@@ -298,7 +310,7 @@ export default function App() {
           }
         >
           {!isProfile && (
-            <div className="flex items-center justify-between">
+            <div ref={headerRevealRef} className={`${headerRevealClass} flex items-center justify-between`}>
               <div className="flex items-center gap-3">
                 <button
                   onClick={goPlaylist}
@@ -329,10 +341,12 @@ export default function App() {
           )}
 
           {!isProfile && (
-            <GlobalSearch
-              onRequestExpand={handleRequestExpand}
-              onCardElementChange={registerCardElement}
-            />
+            <div ref={searchRevealRef} className={searchRevealClass}>
+              <GlobalSearch
+                onRequestExpand={handleRequestExpand}
+                onCardElementChange={registerCardElement}
+              />
+            </div>
           )}
 
           {route.name === "playlist" ? (
@@ -371,7 +385,7 @@ export default function App() {
               onCardElementChange={registerCardElement}
             />
           ) : (
-            <div className="space-y-4">
+            <div ref={homeSectionRef} className={`${homeRevealClass} space-y-4`}>
               {recsShuffled.length > 0 && (
                 <TracksCarousel
                   tracks={recsShuffled}

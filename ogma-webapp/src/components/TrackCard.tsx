@@ -1,5 +1,5 @@
 // /home/ogma/ogma/ogma-webapp/src/components/TrackCard.tsx
-import { useEffect, useMemo, useRef, useState, useCallback, useImperativeHandle, forwardRef, type ComponentType, type MutableRefObject } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, useImperativeHandle, forwardRef, type MutableRefObject } from "react";
 import Counter from "@/components/Counter";
 import type { Track } from "@/types/types";
 import { sendTrackToMe } from "@/lib/api";
@@ -8,34 +8,14 @@ import GradientRing from "@/components/GradientRing";
 import { addToPlaylist, inPlaylist, removeFromPlaylist, addItemToPlaylist, listMyPlaylists } from "@/lib/playlists";
 import AddToPlaylistPopover from "@/components/AddToPlaylistPopover";
 
-// Новые импорты фоновых компонентов React Bits
-import LiquidChrome from "@/components/backgrounds/LiquidChrome";
-import Squares from "@/components/backgrounds/Squares";
-import LetterGlitch from "@/components/backgrounds/LetterGlitch";
-import Orb from "@/components/backgrounds/Orb";
-import Ballpit from "@/components/backgrounds/Ballpit";
-import Waves from "@/components/backgrounds/Waves";
-import Iridescence from "@/components/backgrounds/Iridescence";
-import Hyperspeed from "@/components/backgrounds/Hyperspeed";
-import Threads from "@/components/backgrounds/Threads";
-import DotGrid from "@/components/backgrounds/DotGrid";
-import RippleGrid from "@/components/backgrounds/RippleGrid";
-import FaultyTerminal from "@/components/backgrounds/FaultyTerminal";
-import Dither from "@/components/backgrounds/Dither";
-import Galaxy from "@/components/backgrounds/Galaxy";
-import PrismaticBurst from "@/components/backgrounds/PrismaticBurst";
-import Lightning from "@/components/backgrounds/Lightning";
-import Beams from "@/components/backgrounds/Beams";
-import GradientBlinds from "@/components/backgrounds/GradientBlinds";
-import Particles from "@/components/backgrounds/Particles";
-import Plasma from "@/components/backgrounds/Plasma";
-import Aurora from "@/components/backgrounds/Aurora";
-import PixelBlast from "@/components/backgrounds/PixelBlast";
-import LightRays from "@/components/backgrounds/LightRays";
-import Silk from "@/components/backgrounds/Silk";
-import DarkVeil from "@/components/backgrounds/DarkVeil";
-import Prism from "@/components/backgrounds/Prism";
-import LiquidEther from "@/components/backgrounds/LiquidEther";
+import {
+  BACKGROUND_KEYS,
+  DEFAULT_BACKGROUND_KEY,
+  LETTER_GLITCH_KEY,
+  isBackgroundKey,
+  useBackgroundComponent,
+  type BackgroundKey,
+} from "@/components/backgrounds/registry";
 import GlassSurface from "@/components/GlassSurface";
 import {
   SwipeController,
@@ -279,31 +259,18 @@ export function TrackCard({
   const alreadyLocal = inPlaylist(t.id);
   const already = alreadyLocal || remoteContains;
   // --- выбор фоновой анимации React Bits (стабильно "случайно" по id трека) ---
-  const BackgroundComp = useMemo<ComponentType<any>>(() => {
-    // список без затенения верхнего объекта
-    const BG_LIST: ComponentType<any>[] = [
-      LiquidChrome, Squares, LetterGlitch, Orb, Ballpit, Waves, Iridescence,
-      Hyperspeed, Threads, DotGrid, RippleGrid, FaultyTerminal, Dither, Galaxy, PrismaticBurst,
-      Lightning, Beams, GradientBlinds, Particles, Plasma, Aurora, PixelBlast, LightRays,
-      Silk, DarkVeil, Prism, LiquidEther,
-    ];
-    const byKey = {
-      LiquidChrome, Squares, LetterGlitch, Orb, Ballpit, Waves, Iridescence,
-      Hyperspeed, Threads, DotGrid, RippleGrid, FaultyTerminal, Dither, Galaxy, PrismaticBurst,
-      Lightning, Beams, GradientBlinds, Particles, Plasma, Aurora, PixelBlast, LightRays,
-      Silk, DarkVeil, Prism, LiquidEther,
-    } as Record<string, ComponentType<any>>;
+  const backgroundKey = useMemo<BackgroundKey>(() => {
+    const pool = BACKGROUND_KEYS.length ? BACKGROUND_KEYS : [DEFAULT_BACKGROUND_KEY];
 
     const pickRandomById = () => {
-      const idStr = String(t.id);
+      const idStr = String(t.id ?? "");
       let hash = 0;
-      for (let i = 0; i < idStr.length; i++) {
+      for (let i = 0; i < idStr.length; i += 1) {
         hash = (hash * 31 + idStr.charCodeAt(i)) >>> 0;
       }
-      return (BG_LIST[hash % BG_LIST.length] || Waves) as ComponentType<any>;
+      return pool[hash % pool.length] ?? DEFAULT_BACKGROUND_KEY;
     };
 
-    // 👇 helper с guard против SSR
     const lsGet = (key: string): string | null => {
       if (typeof window === "undefined") return null;
       try {
@@ -313,24 +280,27 @@ export function TrackCard({
       }
     };
 
-    // 1) источник правды: принудительные пропсы из предпросмотра, иначе — localStorage
-    const mode = (forceBgMode ??
-      (lsGet("ogma_track_bg_mode") as "random" | "fixed" | null) ??
-      "random") as "random" | "fixed";
+    const mode = (forceBgMode ?? (lsGet("ogma_track_bg_mode") as "random" | "fixed" | null) ?? "random") as
+      | "random"
+      | "fixed";
 
     if (mode === "fixed") {
-      const k = forceBgKey ?? lsGet("ogma_track_bg_key") ?? "";
-      if (k && byKey[k]) return byKey[k];
+      const candidate = forceBgKey ?? lsGet("ogma_track_bg_key") ?? "";
+      if (candidate && isBackgroundKey(candidate)) {
+        return candidate;
+      }
       return pickRandomById();
     }
 
-    // random
     return pickRandomById();
   }, [t.id, bgVersion, forceBgMode, forceBgKey]);
 
-  // дефолтные пропсы только для LetterGlitch
-  const bgExtraProps: any =
-    BackgroundComp === (LetterGlitch as unknown as ComponentType<any>)
+  const Background = useBackgroundComponent(backgroundKey, {
+    enabled: !!isActive && cardInView,
+  });
+
+  const bgExtraProps: Record<string, unknown> =
+    backgroundKey === LETTER_GLITCH_KEY
       ? {
         glitchColors: ["#67d4d9", "#5b95f7", "#66daea"],
         glitchSpeed: 0.75,
@@ -920,11 +890,18 @@ export function TrackCard({
         {/* Фоновая анимация + прогресс-плёнка */}
         {isActive && cardInView && (
           <div className="absolute inset-0 z-0 pointer-events-none">
-            <div className="absolute inset-0 pointer-events-none opacity-70">
-              <BackgroundComp
-                key={`${bgVersion}:${forceBgMode ?? ""}:${forceBgKey ?? ""}`}
-                {...bgExtraProps}
-              />
+            <div
+              className="absolute inset-0 pointer-events-none opacity-70"
+              key={`${backgroundKey}:${bgVersion}:${forceBgMode ?? ""}:${forceBgKey ?? ""}`}
+            >
+              {Background ? (
+                <Background className="absolute inset-0 w-full h-full" {...bgExtraProps} />
+              ) : (
+                <div
+                  className="absolute inset-0 w-full h-full bg-[radial-gradient(120%_75%_at_50%_0%,rgba(255,255,255,.04)_0%,rgba(255,255,255,0)_60%)]"
+                  aria-hidden="true"
+                />
+              )}
             </div>
 
             <TrackProgressOverlay

@@ -1,47 +1,18 @@
 // /home/ogma/ogma/ogma-webapp/src/components/EditProfileModal.tsx
-import React, { useEffect, useState, ComponentType, useRef } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 
 import { TrackCard } from "@/components/TrackCard";
-
-import LiquidChrome from "@/components/backgrounds/LiquidChrome";
-import Squares from "@/components/backgrounds/Squares";
-import LetterGlitch from "@/components/backgrounds/LetterGlitch";
-import Orb from "@/components/backgrounds/Orb";
-import Ballpit from "@/components/backgrounds/Ballpit";
-import Waves from "@/components/backgrounds/Waves";
-import Iridescence from "@/components/backgrounds/Iridescence";
-import Hyperspeed from "@/components/backgrounds/Hyperspeed";
-import Threads from "@/components/backgrounds/Threads";
-import DotGrid from "@/components/backgrounds/DotGrid";
-import RippleGrid from "@/components/backgrounds/RippleGrid";
-import FaultyTerminal from "@/components/backgrounds/FaultyTerminal";
-import Dither from "@/components/backgrounds/Dither";
-import Galaxy from "@/components/backgrounds/Galaxy";
-import PrismaticBurst from "@/components/backgrounds/PrismaticBurst";
-import Lightning from "@/components/backgrounds/Lightning";
-import Beams from "@/components/backgrounds/Beams";
-import GradientBlinds from "@/components/backgrounds/GradientBlinds";
-import Particles from "@/components/backgrounds/Particles";
-import Plasma from "@/components/backgrounds/Plasma";
-import Aurora from "@/components/backgrounds/Aurora";
-import PixelBlast from "@/components/backgrounds/PixelBlast";
-import LightRays from "@/components/backgrounds/LightRays";
-import Silk from "@/components/backgrounds/Silk";
-import DarkVeil from "@/components/backgrounds/DarkVeil";
-import Prism from "@/components/backgrounds/Prism";
-import LiquidEther from "@/components/backgrounds/LiquidEther";
+import {
+  BACKGROUND_KEYS,
+  isBackgroundKey,
+  useBackgroundComponent,
+  type BackgroundKey,
+} from "@/components/backgrounds/registry";
 
 type Props = { open: boolean; onClose: () => void };
 
-const backgrounds = {
-  LiquidChrome, Squares, LetterGlitch, Orb, Ballpit, Waves, Iridescence, Hyperspeed,
-  Threads, DotGrid, RippleGrid, FaultyTerminal, Dither, Galaxy, PrismaticBurst,
-  Lightning, Beams, GradientBlinds, Particles, Plasma, Aurora, PixelBlast, LightRays,
-  Silk, DarkVeil, Prism, LiquidEther,
-} as Record<string, ComponentType<any>>;
-
-const BG_KEYS = Object.keys(backgrounds);
+const BG_KEYS = BACKGROUND_KEYS;
 
 /* =================== App BG apply =================== */
 function applyAppBackgroundFromStorage() {
@@ -139,16 +110,19 @@ function RealBg({
   live?: boolean;
   className?: string;
 }) {
-  const Bg = backgrounds[bgKey];
-  const useLive = live && !!Bg && !UNSAFE_WEBGL.has(bgKey);
+  const validKey = isBackgroundKey(bgKey) ? (bgKey as BackgroundKey) : null;
+  const shouldAttemptLive = live && !!validKey && !UNSAFE_WEBGL.has(bgKey);
+  const Background = useBackgroundComponent(shouldAttemptLive ? validKey : null, {
+    enabled: shouldAttemptLive,
+  });
+
+  const showLive = shouldAttemptLive && !!Background;
 
   return (
     <>
-      {useLive &&
-        React.createElement(Bg, {
-          className: `absolute inset-0 pointer-events-none ${className}`,
-        })}
-      {!useLive && (
+      {showLive ? (
+        <Background className={`absolute inset-0 pointer-events-none ${className}`} />
+      ) : (
         <div
           className="absolute inset-0 opacity-30 pointer-events-none"
           style={{
@@ -158,7 +132,7 @@ function RealBg({
           }}
         />
       )}
-      {useLive && (
+      {showLive && (
         <div
           className="absolute inset-0 pointer-events-none"
           style={{

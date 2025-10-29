@@ -46,6 +46,13 @@ type RectLike = {
   height: number;
 };
 
+type ViewportMetrics = {
+  width: number;
+  height: number;
+  offsetTop: number;
+  offsetLeft: number;
+};
+
 const CLASSNAMES: PresenceClassNames = {
   base: "viewport-reveal",
   entered: "viewport-reveal--entered",
@@ -71,7 +78,7 @@ export function useViewportPresence<T extends HTMLElement = HTMLElement>(
   const [hasEntered, setHasEntered] = useState(false);
   const hasEnteredRef = useRef(false);
   const lastNotifiedRef = useRef<{ isVisible: boolean; hasEntered: boolean } | null>(null);
-  const lastCallbackRef = useRef<typeof onVisibilityChange>();
+  const lastCallbackRef = useRef<typeof onVisibilityChange>(undefined);
 
   useEffect(() => {
     if (!onVisibilityChange) {
@@ -240,31 +247,28 @@ function isElementInViewport(element: Element, ratio: number, margin: string): b
   if (typeof window === "undefined") return true;
 
   const rect = element.getBoundingClientRect();
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewport = getViewportMetrics();
 
-  if (viewportHeight === 0 || viewportWidth === 0) return true;
+  if (viewport.height === 0 || viewport.width === 0) return true;
 
   const [marginTop, marginRight, marginBottom, marginLeft] = parseRootMargin(
     margin,
-    viewportWidth,
-    viewportHeight
+    viewport.width,
+    viewport.height
   );
 
   const viewportRect = createViewportRect(
-    viewportWidth,
-    viewportHeight,
+    viewport.width,
+    viewport.height,
     marginTop,
     marginRight,
     marginBottom,
-    marginLeft
+    marginLeft,
+    viewport.offsetTop,
+    viewport.offsetLeft
   );
 
-  return isVisibleByRectangles(
-    domRectToRectLike(rect),
-    viewportRect,
-    ratio
-  );
+  return isVisibleByRectangles(domRectToRectLike(rect), viewportRect, ratio);
 }
 
 function isEntryVisible(entry: IntersectionObserverEntry, ratio: number): boolean {
@@ -282,6 +286,29 @@ function isEntryVisible(entry: IntersectionObserverEntry, ratio: number): boolea
     ratio,
     domRectToRectLike(entry.intersectionRect)
   );
+}
+
+function getViewportMetrics(): ViewportMetrics {
+  if (typeof window === "undefined") {
+    return { width: 1, height: 1, offsetTop: 0, offsetLeft: 0 };
+  }
+
+  const visual = window.visualViewport;
+  if (visual) {
+    const width = visual.width || window.innerWidth || document.documentElement.clientWidth || 0;
+    const height = visual.height || window.innerHeight || document.documentElement.clientHeight || 0;
+    return {
+      width,
+      height,
+      offsetTop: visual.offsetTop || 0,
+      offsetLeft: visual.offsetLeft || 0,
+    };
+  }
+
+  const width = window.innerWidth || document.documentElement.clientWidth || 0;
+  const height = window.innerHeight || document.documentElement.clientHeight || 0;
+
+  return { width, height, offsetTop: 0, offsetLeft: 0 };
 }
 
 function parseRootMargin(
@@ -314,12 +341,14 @@ function createViewportRect(
   marginTop: number,
   marginRight: number,
   marginBottom: number,
-  marginLeft: number
+  marginLeft: number,
+  offsetTop = 0,
+  offsetLeft = 0
 ): RectLike {
-  const top = -marginTop;
-  const left = -marginLeft;
-  const right = viewportWidth + marginRight;
-  const bottom = viewportHeight + marginBottom;
+  const top = offsetTop - marginTop;
+  const left = offsetLeft - marginLeft;
+  const right = offsetLeft + viewportWidth + marginRight;
+  const bottom = offsetTop + viewportHeight + marginBottom;
 
   return {
     top,
@@ -354,16 +383,15 @@ function getGlobalViewportRect(): RectLike {
     };
   }
 
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewport = getViewportMetrics();
 
   return {
-    top: 0,
-    left: 0,
-    right: viewportWidth,
-    bottom: viewportHeight,
-    width: Math.max(0, viewportWidth),
-    height: Math.max(0, viewportHeight),
+    top: viewport.offsetTop,
+    left: viewport.offsetLeft,
+    right: viewport.offsetLeft + viewport.width,
+    bottom: viewport.offsetTop + viewport.height,
+    width: Math.max(0, viewport.width),
+    height: Math.max(0, viewport.height),
   };
 }
 

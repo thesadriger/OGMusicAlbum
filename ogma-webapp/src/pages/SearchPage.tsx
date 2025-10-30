@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import GlobalSearch from "@/components/GlobalSearch";
 import type { Track } from "@/types/types";
+import { getLastSearchQuery } from "@/store/searchStore";
 
 export default function SearchPage({
   query,
@@ -13,10 +14,17 @@ export default function SearchPage({
   onRequestExpand?: (track: Track, rect: DOMRect) => void;
   onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
 }) {
-  const [controlledQuery, setControlledQuery] = useState(query);
+  const [controlledQuery, setControlledQuery] = useState(() => {
+    return query || getLastSearchQuery();
+  });
 
   useEffect(() => {
-    setControlledQuery(query);
+    if (query) {
+      setControlledQuery(query);
+      return;
+    }
+    const fallback = getLastSearchQuery();
+    setControlledQuery(fallback);
   }, [query]);
 
   useEffect(() => {
@@ -56,6 +64,7 @@ export default function SearchPage({
         onQueryChange={setControlledQuery}
         onRequestExpand={onRequestExpand}
         onCardElementChange={onCardElementChange}
+        autoFocus
       />
     </section>
   );

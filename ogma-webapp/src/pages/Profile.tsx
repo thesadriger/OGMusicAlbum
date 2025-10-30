@@ -7,6 +7,7 @@ import { goHome, goPlaylistHandle } from "@/lib/router";
 import CreatePlaylistModal from "@/components/CreatePlaylistModal";
 import EditPlaylistModal from "@/components/EditPlaylistModal";
 import { listMyPlaylists, deletePlaylist, getPlaylist } from "@/lib/playlists";
+import { ensureTelegramAuth, getTelegramDeeplink } from "@/lib/api";
 import SwipePlaylistRow from "@/components/SwipePlaylistRow";
 
 // модалка-редактор профиля
@@ -137,8 +138,15 @@ export default function ProfilePage({
   onCardElementChange,
 }: ProfileProps) {
   /* ===== Hooks (всегда в одном порядке, без раннего return до них) ===== */
-  const { me, loading, error } = useMe();
-  const listeningTotals = usePlaylistListeningTotal();
+  const { me, loading, error, unauthorized } = useMe();
+  const isGuest = unauthorized || !me;
+  const listeningTotals = usePlaylistListeningTotal(!isGuest);
+  const telegramLink = React.useMemo(() => getTelegramDeeplink(), []);
+  const openTelegram = React.useCallback(() => {
+    try {
+      ensureTelegramAuth();
+    } catch { window.location.href = telegramLink; }
+  }, [telegramLink]);
 
   const [localQ, setLocalQ] = React.useState<string>("");
   const [modalOpen, setModalOpen] = React.useState(false);
@@ -161,6 +169,20 @@ export default function ProfilePage({
   const backgroundCacheRef = React.useRef<Record<string, ComponentType | null>>({});
   const [headerBackgroundComponent, setHeaderBackgroundComponent] = React.useState<ComponentType | null>(null);
   const [allowHeaderVisuals, setAllowHeaderVisuals] = React.useState(false);
+  const handleCreatePlaylistClick = React.useCallback(() => {
+    if (isGuest) {
+      openTelegram();
+      return;
+    }
+    setModalOpen(true);
+  }, [isGuest, openTelegram]);
+  const handleEditProfile = React.useCallback(() => {
+    if (isGuest) {
+      openTelegram();
+      return;
+    }
+    setEditOpen(true);
+  }, [isGuest, openTelegram]);
 
   React.useEffect(() => {
     if (!localStorage.getItem("ogma_profile_header_bg_key")) {
@@ -350,6 +372,10 @@ export default function ProfilePage({
   }, [me?.telegram_id]);
 
   React.useEffect(() => {
+    if (isGuest) {
+      setMyPlaylists([]);
+      return;
+    }
     let dead = false;
     (async () => {
       try {
@@ -360,9 +386,10 @@ export default function ProfilePage({
     return () => {
       dead = true;
     };
-  }, []);
+  }, [isGuest]);
 
   React.useEffect(() => {
+    if (isGuest) return;
     const onRefresh = async () => {
       try {
         const r = await listMyPlaylists();
@@ -371,7 +398,7 @@ export default function ProfilePage({
     };
     window.addEventListener("ogma:myplaylists-change" as any, onRefresh as any);
     return () => window.removeEventListener("ogma:myplaylists-change" as any, onRefresh as any);
-  }, []);
+  }, [isGuest]);
 
   // ——— счётчики для модалки настроек ———
   const profileListFilteredByQuery = React.useMemo(() => {
@@ -399,20 +426,23 @@ export default function ProfilePage({
   }, [profileListFilteredByQuery]);
 
   // остальные вычисления (без хуков)
-  const label = me?.name || me?.username || "Профиль";
+  const label = me?.name || me?.username || (isGuest ? "Гость" : "Профиль");
   const statusEmoji = pickEmojiFromName(me?.name);
-  const listenSeconds = listeningTotals.seconds ?? null;
+  const avatarInitials = isGuest ? "OG" : initials(me?.name, me?.username);
+  const listenSeconds = !isGuest ? listeningTotals.seconds ?? null : null;
   const listenSecondsDisplay = React.useMemo(() => {
+    if (isGuest) return "—";
     if (listeningTotals.loading) return "…";
     if (listenSeconds == null) return "—";
     return formatSecondsToHMS(listenSeconds);
-  }, [listeningTotals.loading, listenSeconds]);
+  }, [isGuest, listeningTotals.loading, listenSeconds]);
   const listenSecondsTitle = React.useMemo(() => {
+    if (isGuest) return "Войдите через Telegram, чтобы увидеть статистику";
     if (listenSeconds == null) {
       return listeningTotals.error ? `Не удалось загрузить: ${listeningTotals.error.message}` : undefined;
     }
     return `${listenSeconds} сек.`;
-  }, [listenSeconds, listeningTotals.error]);
+  }, [isGuest, listenSeconds, listeningTotals.error]);
 
   const {
     ref: headerRef,
@@ -441,14 +471,6 @@ export default function ProfilePage({
     );
   }
   if (error) return <div className="max-w-3xl mx-auto p-4 text-red-400">Ошибка загрузки профиля</div>;
-  if (!me) {
-    return (
-      <div className="max-w-3xl mx-auto p-4">
-        <h1 className="text-xl font-semibold mb-2">Профиль</h1>
-        <p className="text-zinc-400">Вы не авторизованы.</p>
-      </div>
-    );
-  }
 
   const HeaderBackground = headerBackgroundComponent;
   const headerBackgroundKey = HeaderBackground && headerBgKey ? `profile:${headerBgKey}` : "profile:fallback";
@@ -550,10 +572,10 @@ export default function ProfilePage({
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-[55%]">
           <div className="p-[2px] rounded-full animate-spin [animation-duration:18s]" style={{ background: "conic-gradient(#67d4d9, #5b95f7, #66daea, #5db5f7, #67d4d9)" }}>
             <div className="size-28 rounded-full overflow-hidden bg-black/10 grid place-items-center text-3xl font-semibold text-white/90 ring-2 ring-white/20">
-              {me.photo_url ? (
+              {me?.photo_url ? (
                 <img src={me.photo_url} alt="Аватар" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
               ) : (
-                <span>{initials(me?.name, me?.username)}</span>
+                <span>{avatarInitials}</span>
               )}
             </div>
           </div>
@@ -566,7 +588,14 @@ export default function ProfilePage({
           </div>
           {!embedded && (
             <div className="mt-1 text-sm text-zinc-300" title={listenSecondsTitle}>
-              Общее прослушанное время плейлистов: <span className="font-mono">{listenSecondsDisplay}</span>
+              {isGuest ? (
+                <span>Войдите через Telegram, чтобы синхронизировать статистику.</span>
+              ) : (
+                <>
+                  Общее прослушанное время плейлистов:{" "}
+                  <span className="font-mono">{listenSecondsDisplay}</span>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -602,10 +631,14 @@ export default function ProfilePage({
 
           <button
             type="button"
-            onClick={() => setModalOpen(true)}
-            aria-label="Создать плейлист"
-            title="Создать новый плейлист"
-            className="px-3 py-2 rounded-xl bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 text-sm hover:opacity-90 active:opacity-90 transition"
+            onClick={handleCreatePlaylistClick}
+            aria-label={isGuest ? "Открыть в Telegram" : "Создать плейлист"}
+            title={isGuest ? "Открыть мини-приложение в Telegram для создания плейлистов" : "Создать новый плейлист"}
+            className={`px-3 py-2 rounded-xl text-sm transition ${
+              isGuest
+                ? "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-200 hover:opacity-90"
+                : "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 hover:opacity-90 active:opacity-90"
+            }`}
           >
             <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor" aria-hidden="true">
               <path d="M12,20a1,1,0,0,1-1-1V13H5a1,1,0,0,1,0-2h6V5a1,1,0,0,1,2,0v6h6a1,1,0,0,1,0,2H13v6A1,1,0,0,1,12,20Z" />
@@ -644,6 +677,10 @@ export default function ProfilePage({
                   }
                 }}
                 onEdit={(pl) => {
+                  if (isGuest) {
+                    openTelegram();
+                    return;
+                  }
                   setEditPlaylistTarget({
                     ...pl,
                     id: String(pl.id),
@@ -654,7 +691,31 @@ export default function ProfilePage({
             ))}
           </div>
         ) : (
-          <div className="text-sm text-zinc-500">У вас пока нет плейлистов.</div>
+          <div className="text-sm text-zinc-500">
+            {isGuest ? (
+              <div className="space-y-3">
+                <p>Авторизуйтесь через Telegram, чтобы создавать и управлять плейлистами.</p>
+                <button
+                  type="button"
+                  onClick={openTelegram}
+                  className="inline-flex items-center gap-2 rounded-xl px-3 py-2 bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 hover:opacity-90 transition"
+                >
+                  <svg viewBox="0 0 24 24" className="w-4 h-4" fill="currentColor" aria-hidden="true">
+                    <path d="M4.5 12a7.5 7.5 0 0 1 12.8-5.3l-1.8 1.8h4.5V4.5l-1.7 1.7A9 9 0 1 0 21 12h-2.25a6.75 6.75 0 1 1-6.75-6.75V3A9 9 0 0 0 4.5 12Z" />
+                  </svg>
+                  <span>Открыть в Telegram</span>
+                </button>
+                <p className="text-xs text-zinc-400">
+                  Ссылка:{' '}
+                  <a href={telegramLink} className="underline" target="_blank" rel="noreferrer">
+                    {telegramLink}
+                  </a>
+                </p>
+              </div>
+            ) : (
+              "У вас пока нет плейлистов."
+            )}
+          </div>
         )}
       </div>
 
@@ -679,7 +740,7 @@ export default function ProfilePage({
         onClose={() => setSettingsOpen(false)}
         onEditProfile={() => {
           setSettingsOpen(false);
-          setEditOpen(true);
+          handleEditProfile();
         }}
         contentFilterOn={contentFilterOn}
         setContentFilterOn={setContentFilterOn}
@@ -688,10 +749,10 @@ export default function ProfilePage({
         visibleTracksCountFiltered={totalVisibleDedup}
       />
 
-      <EditProfileModal open={editOpen} onClose={() => setEditOpen(false)} />
+      <EditProfileModal open={!isGuest && editOpen} onClose={() => setEditOpen(false)} />
 
       <CreatePlaylistModal
-        open={modalOpen}
+        open={!isGuest && modalOpen}
         onClose={() => setModalOpen(false)}
         onCreated={(p) => {
           setMyPlaylists((prev) => [p, ...prev]);
@@ -705,7 +766,7 @@ export default function ProfilePage({
         }}
       />
       <EditPlaylistModal
-        open={Boolean(editPlaylistTarget)}
+        open={!isGuest && Boolean(editPlaylistTarget)}
         playlist={editPlaylistTarget}
         onClose={() => setEditPlaylistTarget(null)}
         onUpdated={(updated) => {

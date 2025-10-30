@@ -87,3 +87,18 @@
   /* после первого показа убираем размытие, чтобы анимация скрытия не размывала контент */
   filter: none;
 }
+
+@keyframes soft-gradient-fade {
+  0% {
+    filter: saturate(1) brightness(1);
+    transform: scale(1);
+  }
+  50% {
+    filter: saturate(1.08) brightness(1.05);
+    transform: scale(1.03);
+  }
+  100% {
+    filter: saturate(1.15) brightness(1.1);
+    transform: scale(1.05);
+  }
+}

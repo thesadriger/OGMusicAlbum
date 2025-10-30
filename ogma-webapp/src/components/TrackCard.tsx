@@ -264,7 +264,8 @@ export function TrackCard({
   const already = alreadyLocal || remoteContains;
   // --- выбор фоновой анимации React Bits (стабильно "случайно" по id трека) ---
   const backgroundKey = useMemo<BackgroundKey>(() => {
-    const pool = BACKGROUND_KEYS.length ? BACKGROUND_KEYS : [DEFAULT_BACKGROUND_KEY];
+    const variants = BACKGROUND_KEYS.filter((key) => key !== DEFAULT_BACKGROUND_KEY);
+    const pool = variants.length ? variants : [DEFAULT_BACKGROUND_KEY];
 
     const pickRandomById = () => {
       const idStr = String(t.id ?? "");

@@ -4,6 +4,7 @@ import type { ComponentType } from "react";
 type BackgroundLoader = () => Promise<{ default: ComponentType<any> } | Record<string, unknown>>;
 
 const BACKGROUND_KEY_LIST = [
+  "SoftGradient",
   "LiquidChrome",
   "Squares",
   "LetterGlitch",
@@ -36,6 +37,7 @@ const BACKGROUND_KEY_LIST = [
 export type BackgroundKey = (typeof BACKGROUND_KEY_LIST)[number];
 
 const BACKGROUND_LOADERS: Record<BackgroundKey, BackgroundLoader> = {
+  SoftGradient: () => import("./SoftGradient"),
   LiquidChrome: () => import("./LiquidChrome"),
   Squares: () => import("./Squares"),
   LetterGlitch: () => import("./LetterGlitch"),
@@ -69,6 +71,7 @@ const BACKGROUND_CACHE = new Map<BackgroundKey, ComponentType<any>>();
 
 export const BACKGROUND_KEYS: BackgroundKey[] = [...BACKGROUND_KEY_LIST];
 export const DEFAULT_BACKGROUND_KEY: BackgroundKey = BACKGROUND_KEY_LIST[0];
+const HEAVY_LOAD_DEFER_MS = 1500;
 export const HEAVY_BACKGROUND_KEYS = new Set<BackgroundKey>([
   "Hyperspeed",
   "Galaxy",
@@ -86,41 +89,58 @@ export function isBackgroundKey(value: string | null | undefined): value is Back
   return !!value && value in BACKGROUND_LOADERS;
 }
 
-type UseBackgroundOptions = { enabled?: boolean };
+type UseBackgroundOptions = {
+  enabled?: boolean;
+  deferHeavy?: boolean;
+  fallbackForHeavy?: BackgroundKey | null;
+  heavyDeferMs?: number;
+};
 
 export function useBackgroundComponent(
   key: BackgroundKey | null | undefined,
   options: UseBackgroundOptions = {}
 ): ComponentType<any> | null {
-  const { enabled = true } = options;
-  const [component, setComponent] = useState<ComponentType<any> | null>(() => {
+  const {
+    enabled = true,
+    deferHeavy = true,
+    fallbackForHeavy = DEFAULT_BACKGROUND_KEY,
+    heavyDeferMs = HEAVY_LOAD_DEFER_MS,
+  } = options;
+
+  const [resolvedKey, setResolvedKey] = useState<BackgroundKey | null>(() => {
     if (!key) return null;
-    return BACKGROUND_CACHE.get(key) ?? null;
+    if (!deferHeavy || !HEAVY_BACKGROUND_KEYS.has(key) || !fallbackForHeavy) {
+      return key;
+    }
+    return fallbackForHeavy;
+  });
+
+  const effectiveKey: BackgroundKey | null = enabled ? resolvedKey : null;
+
+  const [component, setComponent] = useState<ComponentType<any> | null>(() => {
+    if (!effectiveKey) return null;
+    return BACKGROUND_CACHE.get(effectiveKey) ?? null;
   });
 
   useEffect(() => {
-    if (!key) {
+    if (!effectiveKey) {
       setComponent(null);
       return;
     }
 
-    const cached = BACKGROUND_CACHE.get(key);
+    const cached = BACKGROUND_CACHE.get(effectiveKey);
     if (cached) {
       setComponent(() => cached);
       return;
     }
 
-    if (!enabled) {
-      return;
-    }
-
     let cancelled = false;
-    BACKGROUND_LOADERS[key]()
+    BACKGROUND_LOADERS[effectiveKey]()
       .then((module) => {
         if (cancelled) return;
-        const resolved = resolveModule(module, key);
+        const resolved = resolveModule(module, effectiveKey);
         if (!resolved) return;
-        BACKGROUND_CACHE.set(key, resolved);
+        BACKGROUND_CACHE.set(effectiveKey, resolved);
         setComponent(() => resolved);
       })
       .catch(() => {
@@ -130,10 +150,62 @@ export function useBackgroundComponent(
     return () => {
       cancelled = true;
     };
-  }, [enabled, key]);
+  }, [effectiveKey]);
 
-  if (!key) return null;
-  return BACKGROUND_CACHE.get(key) ?? component;
+  useEffect(() => {
+    if (!key) {
+      setResolvedKey(null);
+      return;
+    }
+
+    if (!deferHeavy || !HEAVY_BACKGROUND_KEYS.has(key) || !fallbackForHeavy) {
+      setResolvedKey(key);
+      return;
+    }
+
+    setResolvedKey(fallbackForHeavy);
+
+    if (!enabled) {
+      return;
+    }
+
+    let cancelled = false;
+    let idleHandle: number | null = null;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+    const activateHeavy = () => {
+      if (cancelled) return;
+      setResolvedKey(key);
+    };
+
+    if (
+      typeof window !== "undefined" &&
+      typeof (window as any).requestIdleCallback === "function"
+    ) {
+      idleHandle = (window as any).requestIdleCallback(() => activateHeavy(), {
+        timeout: heavyDeferMs,
+      });
+    } else {
+      timeoutHandle = setTimeout(activateHeavy, heavyDeferMs);
+    }
+
+    return () => {
+      cancelled = true;
+      if (
+        idleHandle != null &&
+        typeof window !== "undefined" &&
+        typeof (window as any).cancelIdleCallback === "function"
+      ) {
+        (window as any).cancelIdleCallback(idleHandle);
+      }
+      if (timeoutHandle != null) {
+        clearTimeout(timeoutHandle);
+      }
+    };
+  }, [deferHeavy, enabled, fallbackForHeavy, heavyDeferMs, key]);
+
+  if (!effectiveKey) return null;
+  return BACKGROUND_CACHE.get(effectiveKey) ?? component;
 }
 
 export async function preloadBackground(key: BackgroundKey): Promise<ComponentType<any> | null> {

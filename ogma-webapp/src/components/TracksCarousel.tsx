@@ -27,9 +27,10 @@ const DRAG_BUFFER = 0;
 const VELOCITY_THRESHOLD = 500;
 const SPRING = { type: "spring" as const, stiffness: 140, damping: 26, mass: 1.2 };
 
-const BACKGROUND_POOL: BackgroundKey[] = BACKGROUND_KEYS.length
-  ? BACKGROUND_KEYS
-  : [DEFAULT_BACKGROUND_KEY];
+const BACKGROUND_POOL: BackgroundKey[] = (() => {
+  const variants = BACKGROUND_KEYS.filter((key) => key !== DEFAULT_BACKGROUND_KEY);
+  return variants.length ? variants : [DEFAULT_BACKGROUND_KEY];
+})();
 
 const LOCAL_STORAGE_BG_MODE_KEY = "ogma_track_bg_mode";
 const LOCAL_STORAGE_BG_KEY = "ogma_track_bg_key";

@@ -13,6 +13,7 @@ import type { Track } from "@/types/types";
 import ElasticSlider from "@/components/ElasticSlider";
 import {
   BACKGROUND_KEYS,
+  DEFAULT_BACKGROUND_KEY,
   LETTER_GLITCH_KEY,
   isBackgroundKey,
   useBackgroundComponent,
@@ -69,16 +70,20 @@ const DEFAULT_GESTURE_HINTS_SPACE = 0;
 const GESTURE_HINTS_GAP_PX = 15;
 const SHOW_GESTURE_HINTS = false; // можно быстро вернуть подсказки, поменяв на true
 
+const BACKGROUND_RANDOM_POOL: BackgroundKey[] = (() => {
+  const variants = BACKGROUND_KEYS.filter((key) => key !== DEFAULT_BACKGROUND_KEY);
+  return variants.length ? variants : [DEFAULT_BACKGROUND_KEY];
+})();
+
 function pickBackgroundKey(trackId: string | number | null | undefined): BackgroundKey {
-  const fallback: BackgroundKey = BACKGROUND_KEYS[0] ?? ("LiquidChrome" as BackgroundKey);
-  const pool = BACKGROUND_KEYS.length ? BACKGROUND_KEYS : [fallback];
+  const pool = BACKGROUND_RANDOM_POOL;
   const idStr = trackId == null ? "" : String(trackId);
   let hash = 0;
   for (let i = 0; i < idStr.length; i += 1) {
     hash = (hash * 31 + idStr.charCodeAt(i)) >>> 0;
   }
 
-  const hashed = pool[hash % pool.length] ?? pool[0];
+  const hashed = pool[hash % pool.length] ?? DEFAULT_BACKGROUND_KEY;
 
   const mode =
     (typeof window !== "undefined"

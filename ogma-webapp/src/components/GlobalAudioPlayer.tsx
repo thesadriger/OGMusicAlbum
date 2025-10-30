@@ -45,7 +45,6 @@ type Props = {
   onRequestExpand?: (track: Track, originRect: DOMRect) => void;
 };
 
-const EXPAND_HOLD_MS = 450;
 const EXPAND_CANCEL_PX = 12;
 const INTERACTIVE_SELECTOR = [
   "button",
@@ -160,9 +159,7 @@ const fmt = (s: number) => {
 export default function GlobalAudioPlayer({ onAddToPlaylist, onRequestExpand }: Props) {
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
   const expandSurfaceRef = React.useRef<HTMLDivElement | null>(null);
-  const expandHoldTimerRef = React.useRef<number | null>(null);
-  const expandPointerRef = React.useRef<{ x: number; y: number } | null>(null);
-  const expandPointerIdRef = React.useRef<number | null>(null);
+  const expandPointerRef = React.useRef<{ x: number; y: number; pointerId: number } | null>(null);
 
   const now = usePlayerStore(selectCurrentTrack);
   const paused = usePlayerStore(selectIsPaused);
@@ -193,20 +190,18 @@ export default function GlobalAudioPlayer({ onAddToPlaylist, onRequestExpand }: 
     }
   }, [pauseLock]);
 
-  const cancelExpandHold = React.useCallback(() => {
-    if (expandHoldTimerRef.current != null) {
-      clearTimeout(expandHoldTimerRef.current);
-      expandHoldTimerRef.current = null;
-    }
-  }, []);
-
-  React.useEffect(() => cancelExpandHold, [cancelExpandHold]);
+  const requestOverlayExpand = React.useCallback(() => {
+    if (!expandSurfaceRef.current || !onRequestExpand || !now) return;
+    try {
+      const rect = expandSurfaceRef.current.getBoundingClientRect();
+      onRequestExpand(now, rect);
+      triggerHapticImpact("medium");
+    } catch { }
+  }, [now, onRequestExpand]);
 
   React.useEffect(() => {
-    cancelExpandHold();
     expandPointerRef.current = null;
-    expandPointerIdRef.current = null;
-  }, [cancelExpandHold, now?.id]);
+  }, [now?.id]);
 
   const handleExpandPointerDown = React.useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -214,65 +209,44 @@ export default function GlobalAudioPlayer({ onAddToPlaylist, onRequestExpand }: 
       if (e.pointerType === "mouse" && e.button !== 0) return;
       if (isInteractiveTarget(e.target)) return;
 
-      cancelExpandHold();
-      expandPointerRef.current = { x: e.clientX, y: e.clientY };
-      expandPointerIdRef.current = e.pointerId;
+      expandPointerRef.current = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
       e.currentTarget.setPointerCapture?.(e.pointerId);
-      expandHoldTimerRef.current = window.setTimeout(() => {
-        expandHoldTimerRef.current = null;
-        if (!expandSurfaceRef.current || !onRequestExpand || !now) return;
-        try {
-          const rect = expandSurfaceRef.current.getBoundingClientRect();
-          onRequestExpand(now, rect);
-          triggerHapticImpact("medium");
-        } catch { }
-      }, EXPAND_HOLD_MS);
     },
-    [cancelExpandHold, now, onRequestExpand]
+    [now, onRequestExpand]
   );
 
-  const handleExpandPointerMove = React.useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      if (!expandPointerRef.current) return;
-      const dx = Math.abs(e.clientX - expandPointerRef.current.x);
-      const dy = Math.abs(e.clientY - expandPointerRef.current.y);
-      if (dx > EXPAND_CANCEL_PX || dy > EXPAND_CANCEL_PX) {
-        cancelExpandHold();
-        if (expandPointerIdRef.current != null) {
-          e.currentTarget.releasePointerCapture?.(expandPointerIdRef.current);
-        }
-        expandPointerRef.current = null;
-        expandPointerIdRef.current = null;
-      }
-    },
-    [cancelExpandHold]
-  );
-
-  const resetExpandState = React.useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      cancelExpandHold();
-      if (expandPointerIdRef.current != null) {
-        e.currentTarget.releasePointerCapture?.(expandPointerIdRef.current);
-      }
+  const handleExpandPointerMove = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const state = expandPointerRef.current;
+    if (!state || state.pointerId !== e.pointerId) return;
+    const dx = Math.abs(e.clientX - state.x);
+    const dy = Math.abs(e.clientY - state.y);
+    if (dx > EXPAND_CANCEL_PX || dy > EXPAND_CANCEL_PX) {
       expandPointerRef.current = null;
-      expandPointerIdRef.current = null;
-    },
-    [cancelExpandHold]
-  );
+      e.currentTarget.releasePointerCapture?.(e.pointerId);
+    }
+  }, []);
 
   const handleExpandPointerUp = React.useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      resetExpandState(e);
+      const state = expandPointerRef.current;
+      if (!state || state.pointerId !== e.pointerId) {
+        expandPointerRef.current = null;
+        return;
+      }
+      expandPointerRef.current = null;
+      e.currentTarget.releasePointerCapture?.(e.pointerId);
+      requestOverlayExpand();
     },
-    [resetExpandState]
+    [requestOverlayExpand]
   );
 
-  const handleExpandPointerCancel = React.useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      resetExpandState(e);
-    },
-    [resetExpandState]
-  );
+  const handleExpandPointerCancel = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const state = expandPointerRef.current;
+    if (state && state.pointerId === e.pointerId) {
+      expandPointerRef.current = null;
+      e.currentTarget.releasePointerCapture?.(e.pointerId);
+    }
+  }, []);
 
   // состояние прогресса/длительности/ошибки
   const [progress, setProgress] = React.useState(0);
@@ -650,8 +624,10 @@ export default function GlobalAudioPlayer({ onAddToPlaylist, onRequestExpand }: 
               onPointerUp={handleExpandPointerUp}
               onPointerCancel={handleExpandPointerCancel}
               onPointerLeave={(e) => {
-                if (expandPointerRef.current) {
-                  resetExpandState(e);
+                const state = expandPointerRef.current;
+                if (state && state.pointerId === e.pointerId) {
+                  expandPointerRef.current = null;
+                  e.currentTarget.releasePointerCapture?.(e.pointerId);
                 }
               }}
             >

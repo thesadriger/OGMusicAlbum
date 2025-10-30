@@ -18,7 +18,7 @@ from fastapi import (
     APIRouter, Depends, HTTPException, Query, Body, Header, Request, Cookie, status
 )
 from typing import List, Dict, Any
-from app.api.users import _get_pool  # общий пул
+from app.api.users import _get_pool, _ensure_user_playlist_table  # общий пул
 
 router = APIRouter()
 
@@ -213,7 +213,7 @@ async def _ensure_db_user(con: asyncpg.Connection, uid: int) -> None:
 async def _ensure_default_playlist(con: asyncpg.Connection, user_id: int) -> str:
     existing = await con.fetchrow(
         """
-        SELECT id::text
+        SELECT id::text, kind, is_public, handle
           FROM playlists
          WHERE user_id = $1
            AND title = 'Мой плейлист'
@@ -223,12 +223,25 @@ async def _ensure_default_playlist(con: asyncpg.Connection, user_id: int) -> str
         user_id,
     )
     if existing:
-        return existing["id"]
+        pid = existing["id"]
+        # приводим тип/флаги к ожидаемым значениям, если вдруг поменялись
+        await con.execute(
+            """
+            UPDATE playlists
+               SET kind = 'system',
+                   is_public = false,
+                   handle = NULL
+             WHERE id = $1
+               AND (kind <> 'system' OR is_public OR handle IS NOT NULL)
+            """,
+            uuid.UUID(pid),
+        )
+        return pid
 
     row = await con.fetchrow(
         """
-        INSERT INTO playlists (user_id, title, kind)
-        VALUES ($1, 'Мой плейлист', 'custom')
+        INSERT INTO playlists (user_id, title, kind, is_public, handle)
+        VALUES ($1, 'Мой плейлист', 'system', false, NULL)
         RETURNING id::text
         """,
         user_id,
@@ -341,13 +354,38 @@ async def list_playlists(
     user_id: int = Depends(get_current_user),
 ):
     await _ensure_playlist_listening_totals(pool)
+    await _ensure_user_playlist_table(pool)
     async with pool.acquire() as con:
         rows = await con.fetch(
             """
-            SELECT p.id::text, p.user_id, p.title, p.kind, p.is_public, p.handle,
-                   p.created_at, p.updated_at,
-                   (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id=p.id) AS item_count,
-                   COALESCE(lst.seconds, 0) AS listen_seconds
+            WITH personal_count AS (
+                SELECT COUNT(*) AS total
+                  FROM user_playlist_items
+                 WHERE user_id = $1
+            )
+            SELECT p.id::text,
+                   p.user_id,
+                   p.title,
+                   p.kind,
+                   p.is_public,
+                   p.handle,
+                   p.created_at,
+                   p.updated_at,
+                   CASE
+                       WHEN (p.kind = 'system'
+                             OR lower(p.title) = lower('Мой плейлист'))
+                            AND p.user_id = $1
+                           THEN COALESCE((SELECT total FROM personal_count), 0)
+                       ELSE (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
+                   END AS item_count,
+                   COALESCE(lst.seconds, 0) AS listen_seconds,
+                   CASE
+                       WHEN (p.kind = 'system'
+                             OR lower(p.title) = lower('Мой плейлист'))
+                            AND p.user_id = $1
+                           THEN TRUE
+                       ELSE FALSE
+                   END AS is_personal
             FROM playlists p
             LEFT JOIN playlist_listening_totals lst ON lst.playlist_id = p.id
             WHERE p.user_id = $1

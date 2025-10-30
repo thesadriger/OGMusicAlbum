@@ -88,9 +88,12 @@ FOR EACH ROW EXECUTE FUNCTION public.fn_playlist_touch_updated();
 CREATE OR REPLACE FUNCTION public.ensure_default_playlist_on_user()
 RETURNS trigger AS $$
 BEGIN
-  INSERT INTO public.playlists (user_id, title, kind)
-  VALUES (NEW.telegram_id, 'Мой плейлист', 'custom')
-  ON CONFLICT (user_id, title) DO NOTHING;
+  INSERT INTO public.playlists (user_id, title, kind, is_public, handle)
+  VALUES (NEW.telegram_id, 'Мой плейлист', 'system', false, NULL)
+  ON CONFLICT (user_id, title) DO UPDATE
+    SET kind = 'system',
+        is_public = false,
+        handle = NULL;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -105,8 +108,8 @@ DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='favorites_old') THEN
     -- Гарантируем «Мой плейлист» для всех, кто есть в favorites_old
-    INSERT INTO public.playlists (user_id, title, kind)
-    SELECT DISTINCT f.user_id, 'Мой плейлист', 'custom'
+    INSERT INTO public.playlists (user_id, title, kind, is_public, handle)
+    SELECT DISTINCT f.user_id, 'Мой плейлист', 'system', false, NULL
     FROM public.favorites_old f
     ON CONFLICT (user_id, title) DO NOTHING;
 

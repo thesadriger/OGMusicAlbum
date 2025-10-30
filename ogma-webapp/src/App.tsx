@@ -290,6 +290,7 @@ export default function App() {
   }, [me?.telegram_id]);
 
   const isProfile = route.name === "profile";
+  const showHeaderSearch = !isProfile && route.name !== "search";
 
   const { ref: headerRevealRef, className: headerRevealClass } = useViewportPresence<HTMLDivElement>({
     amount: 0.5,
@@ -344,7 +345,7 @@ export default function App() {
             </div>
           )}
 
-          {!isProfile && (
+          {showHeaderSearch && (
             <div ref={searchRevealRef} className={searchRevealClass}>
               <GlobalSearch
                 onRequestExpand={handleRequestExpand}

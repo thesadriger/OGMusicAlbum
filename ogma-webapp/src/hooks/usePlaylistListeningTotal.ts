@@ -1,17 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
-import { apiGet } from "@/lib/api";
+import { apiGet, ApiError } from "@/lib/api";
 
 export type PlaylistListeningTotal = {
   seconds: number;
 };
 
-export function usePlaylistListeningTotal() {
+export function usePlaylistListeningTotal(enabled = true) {
   const [seconds, setSeconds] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+
+    if (!enabled) {
+      setSeconds(null);
+      setError(null);
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     (async () => {
       setLoading(true);
@@ -26,7 +35,11 @@ export function usePlaylistListeningTotal() {
       } catch (err: any) {
         if (cancelled) return;
         setSeconds(null);
-        setError(err instanceof Error ? err : new Error("Failed to load playlist listening totals"));
+        if (err instanceof ApiError && err.status === 401) {
+          setError(null);
+        } else {
+          setError(err instanceof Error ? err : new Error("Failed to load playlist listening totals"));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -35,7 +48,7 @@ export function usePlaylistListeningTotal() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enabled]);
 
   return {
     seconds,

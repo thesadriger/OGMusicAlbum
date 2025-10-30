@@ -31,6 +31,33 @@ function join(base: string, path: string) {
 
 const BOT: string = import.meta.env.VITE_BOT_USERNAME || "OGMusicAlbum_Bot";
 
+function getEnvFlag(value: unknown, defaultValue: boolean): boolean {
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(trimmed)) return true;
+    if (["0", "false", "no", "off"].includes(trimmed)) return false;
+  }
+  return defaultValue;
+}
+
+function shouldAllowBrowserAccess(): boolean {
+  try {
+    const qp = new URLSearchParams(location.search);
+    if (qp.has("force_tg") || qp.has("forceTelegram")) return false;
+    if (qp.has("noauth") || qp.has("allow_browser")) return true;
+  } catch { }
+
+  const envValue =
+    import.meta.env.VITE_ALLOW_BROWSER ?? import.meta.env.VITE_ALLOW_BROWSER_DEFAULT;
+  // Если переменная не задана — считаем, что браузер разрешён
+  return getEnvFlag(envValue, true);
+}
+
+export function getTelegramDeeplink(startApp: string = "app"): string {
+  const target = startApp ? encodeURIComponent(startApp) : "app";
+  return `https://t.me/${BOT}?startapp=${target}`;
+}
+
 /** Приклеить tg initData как query-параметр, чтобы <audio> тоже «знал» пользователя */
 function withInit(url: string): string {
   const init = getInitData();
@@ -76,7 +103,7 @@ export function ensureTelegramAuth(): never | void {
   const init = getInitData();
   if (init) return; // уже в WebApp — всё ок
 
-  const deeplink = `https://t.me/${BOT}?startapp=app`;
+  const deeplink = getTelegramDeeplink();
   // пробуем через SDK (если он есть)
   try {
     (window as any)?.Telegram?.WebApp?.openTelegramLink?.(deeplink);
@@ -133,12 +160,7 @@ export async function apiGet<T>(path: string, opts: { timeoutMs?: number } = {})
     });
 
     if (r.status === 401) {
-      const qp = new URLSearchParams(location.search);
-      const ALLOW_BROWSER =
-        import.meta.env.DEV ||
-        import.meta.env.VITE_ALLOW_BROWSER === '1' ||
-        qp.has('noauth');
-      if (!ALLOW_BROWSER) ensureTelegramAuth();
+      if (!shouldAllowBrowserAccess()) ensureTelegramAuth();
       throw new ApiError(401, "Unauthorized"); // <-- status сохраняем
     }
 
@@ -183,12 +205,7 @@ export async function apiPost<T = any>(
     });
 
     if (r.status === 401) {
-      const qp = new URLSearchParams(location.search);
-      const ALLOW_BROWSER =
-        import.meta.env.DEV ||
-        import.meta.env.VITE_ALLOW_BROWSER === "1" ||
-        qp.has("noauth");
-      if (!ALLOW_BROWSER) ensureTelegramAuth();
+      if (!shouldAllowBrowserAccess()) ensureTelegramAuth();
       throw new ApiError(401, "Unauthorized");
     }
 

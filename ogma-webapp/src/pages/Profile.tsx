@@ -266,6 +266,25 @@ export default function ProfilePage({
     return () => window.removeEventListener("ogma:playlist-change" as any, handler as any);
   }, []);
 
+  React.useEffect(() => {
+    if (myPlaylists.length === 0) return;
+    const total = profileList.length;
+    let changed = false;
+    const updated = myPlaylists.map((pl) => {
+      if (pl?.is_personal) {
+        const current = typeof pl.item_count === "number" ? pl.item_count : 0;
+        if (current !== total) {
+          changed = true;
+          return { ...pl, item_count: total };
+        }
+      }
+      return pl;
+    });
+    if (changed) {
+      setMyPlaylists(updated);
+    }
+  }, [myPlaylists, profileList.length]);
+
   // реагируем на локальные смены тем, чтобы обновить headerBgKey
   React.useEffect(() => {
     const onTheme = () => setHeaderBgKey(localStorage.getItem("ogma_profile_header_bg_key") || "");

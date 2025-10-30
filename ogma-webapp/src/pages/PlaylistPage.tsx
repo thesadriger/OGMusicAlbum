@@ -1,9 +1,9 @@
 // /src/pages/PlaylistPage.tsx
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import type { Track } from "@/types/types";
 import { TrackCard } from "@/components/TrackCard";
 import AnimatedList from "@/components/AnimatedList";
-import { getPlaylist } from "@/lib/playlists";
+import { getPlaylist, syncPlaylistWithServer } from "@/lib/playlists";
 import { useContentFilter, filterTracksUniqueByTitle } from "@/hooks/useContentFilter";
 import {
   usePlayerStore,
@@ -31,6 +31,7 @@ export default function PlaylistPage({
   const expandedTrackId = usePlayerStore(selectExpandedTrackId);
   const [list, setList] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
+  const hasLocalDataRef = useRef(false);
 
   // выбранный артист (внутренняя «страница» в секции)
   const [pickedArtist, setPickedArtist] = useState<string | null>(null);
@@ -39,21 +40,39 @@ export default function PlaylistPage({
     toggleTrackController(tracks, index, tracks[index]?.id);
   }, []);
 
-  const refresh = () => {
-    setLoading(true);
+  const refresh = useCallback(() => {
     try {
-      setList(getPlaylist());
+      const local = getPlaylist();
+      hasLocalDataRef.current = local.length > 0;
+      setList(local);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     refresh();
     const handler = () => refresh();
     window.addEventListener("ogma:playlist-change" as any, handler as any);
     return () => window.removeEventListener("ogma:playlist-change" as any, handler as any);
-  }, []);
+  }, [refresh]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!hasLocalDataRef.current) {
+          setLoading(true);
+        }
+        await syncPlaylistWithServer();
+      } catch { }
+      if (cancelled) return;
+      refresh();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh]);
 
   const [contentFilterOn] = useContentFilter();
 

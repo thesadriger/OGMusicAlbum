@@ -14,6 +14,7 @@ import {
   selectExpandedTrackId,
 } from "@/store/playerStore";
 import { toggleTrack as toggleTrackController } from "@/lib/playerController";
+import { setLastSearchQuery } from "@/store/searchStore";
 
 type SearchResp = { hits: Track[]; total?: number };
 type MaybeCatalogResp = { items?: Track[]; total?: number };
@@ -52,6 +53,7 @@ export default function GlobalSearch({
   initialQuery = "",
   onQueryChange,
   onNavigateToSearch,
+  autoFocus = false,
 }: {
   onRequestExpand?: (track: Track, rect: DOMRect) => void;
   onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
@@ -59,6 +61,7 @@ export default function GlobalSearch({
   initialQuery?: string;
   onQueryChange?: (value: string) => void;
   onNavigateToSearch?: (query: string) => void;
+  autoFocus?: boolean;
 }) {
   const nowId = usePlayerStore(selectCurrentTrackId);
   const paused = usePlayerStore(selectIsPaused);
@@ -80,15 +83,34 @@ export default function GlobalSearch({
 
   useEffect(() => {
     setQ(initialQuery);
+    setLastSearchQuery(initialQuery);
   }, [initialQuery]);
 
   const updateQuery = useCallback(
     (value: string) => {
       setQ(value);
+      setLastSearchQuery(value);
       onQueryChange?.(value);
     },
     [onQueryChange]
   );
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    if (typeof window === "undefined") return;
+    const frame = window.requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus({ preventScroll: true });
+      const caretPos = input.value.length;
+      try {
+        input.setSelectionRange(caretPos, caretPos);
+      } catch {
+        // ignore selection errors on unsupported inputs
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [autoFocus]);
 
   useEffect(() => {
     const s = q.trim();

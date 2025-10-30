@@ -1,5 +1,5 @@
 // src/components/GlobalSearch.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { apiGet, ApiError } from "@/lib/api";
 import type { Track } from "@/types/types";
 import SearchResultItem from "@/components/search/SearchResultItem";
@@ -48,14 +48,22 @@ type PlaylistLite = {
 export default function GlobalSearch({
   onRequestExpand,
   onCardElementChange,
+  standalone = true,
+  initialQuery = "",
+  onQueryChange,
+  onNavigateToSearch,
 }: {
   onRequestExpand?: (track: Track, rect: DOMRect) => void;
   onCardElementChange?: (trackId: string, el: HTMLDivElement | null) => void;
+  standalone?: boolean;
+  initialQuery?: string;
+  onQueryChange?: (value: string) => void;
+  onNavigateToSearch?: (query: string) => void;
 }) {
   const nowId = usePlayerStore(selectCurrentTrackId);
   const paused = usePlayerStore(selectIsPaused);
   const expandedTrackId = usePlayerStore(selectExpandedTrackId);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQuery);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const [loading, setLoading] = useState(false);
@@ -71,11 +79,32 @@ export default function GlobalSearch({
   );
 
   useEffect(() => {
+    setQ(initialQuery);
+  }, [initialQuery]);
+
+  const updateQuery = useCallback(
+    (value: string) => {
+      setQ(value);
+      onQueryChange?.(value);
+    },
+    [onQueryChange]
+  );
+
+  useEffect(() => {
     const s = q.trim();
     if (!s) {
       setTracks([]);
       setTotalTracks(null);
       setPlaylists([]);
+      setLoading(false);
+      return;
+    }
+
+    if (!standalone) {
+      setTracks([]);
+      setTotalTracks(null);
+      setPlaylists([]);
+      setLoading(false);
       return;
     }
 
@@ -295,7 +324,14 @@ export default function GlobalSearch({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [q]);
+  }, [q, standalone]);
+
+  useEffect(() => {
+    if (standalone) return;
+    const trimmed = q.trim();
+    if (!trimmed) return;
+    onNavigateToSearch?.(trimmed);
+  }, [standalone, q, onNavigateToSearch]);
 
   const s = q.trim();
 
@@ -312,14 +348,18 @@ export default function GlobalSearch({
         className="relative"
         onSubmit={(e) => {
           e.preventDefault();
-          if (s) window.location.hash = "/";
+          if (!s) {
+            updateQuery("");
+            return;
+          }
+          onNavigateToSearch?.(s);
         }}
       >
         <input
           ref={inputRef}
           value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === "Escape" && setQ("")}
+          onChange={(e) => updateQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && updateQuery("")}
           placeholder="Поиск по названию, артистам, @handle…"
           className={
             "w-full rounded-xl px-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 " +
@@ -329,7 +369,7 @@ export default function GlobalSearch({
         {q.trim().length > 0 && (
           <button
             type="button"
-            onClick={() => setQ("")}
+            onClick={() => updateQuery("")}
             aria-label="Очистить поиск"
             className="absolute right-2 top-1/2 -translate-y-1/2 p-1 h-7 w-7 flex items-center justify-center rounded-full bg-transparent text-zinc-400 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
           >
@@ -338,16 +378,17 @@ export default function GlobalSearch({
         )}
       </form>
 
-      <div className="text-sm text-zinc-500">
-        {loading
-          ? "Загружаем…"
-          : s
-            ? `Найдено треков: ${contentFilterOn ? tracksShown.length : totalTracks ?? tracks.length} • Плейлисты: ${playlists.length}`
-            : null}
-      </div>
+      {standalone && (
+        <div className="text-sm text-zinc-500">
+          {loading
+            ? "Загружаем…"
+            : s
+              ? `Найдено треков: ${contentFilterOn ? tracksShown.length : totalTracks ?? tracks.length} • Плейлисты: ${playlists.length}`
+              : null}
+        </div>
+      )}
 
-      {/* Плейлисты */}
-      {s && (
+      {standalone && s && (
         <div className="space-y-2">
           <div className="text-xs uppercase tracking-wide text-zinc-500 pl-1">
             Плейлисты
@@ -369,8 +410,7 @@ export default function GlobalSearch({
         </div>
       )}
 
-      {/* Треки */}
-      {s && (
+      {standalone && s && (
         <div className="space-y-2">
           <div className="text-xs uppercase tracking-wide text-zinc-500 pl-1">
             Треки

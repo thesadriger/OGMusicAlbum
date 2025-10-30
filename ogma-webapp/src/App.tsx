@@ -19,6 +19,7 @@ import {
   goBackSmart,
   Route,
   goPlaylist,
+  goSearch,
 } from "@/lib/router";
 import ArtistsListPage from "@/pages/ArtistsListPage";
 import PlaylistPage from "@/pages/PlaylistPage";
@@ -32,6 +33,7 @@ import GlobalSearch from "@/components/GlobalSearch";
 import ShinyText from "@/components/ShinyText";
 import ExpandedPlayerOverlay from "@/components/ExpandedPlayerOverlay";
 import { useViewportPresence } from "@/hooks/useViewportPresence";
+import SearchPage from "@/pages/SearchPage";
 import {
   playList as playListController,
   nextTrack,
@@ -234,6 +236,8 @@ export default function App() {
         return "playlist";
       case "publicPlaylist":
         return `public:${(route as any).handle}`;
+      case "search":
+        return `search:${(route as any).query ?? ""}`;
       default:
         return String((route as any).name || "home");
     }
@@ -345,6 +349,8 @@ export default function App() {
               <GlobalSearch
                 onRequestExpand={handleRequestExpand}
                 onCardElementChange={registerCardElement}
+                standalone={false}
+                onNavigateToSearch={goSearch}
               />
             </div>
           )}
@@ -360,6 +366,14 @@ export default function App() {
             <PublicPlaylistPage
               key={`public:${(route as any).handle}`}
               handle={(route as any).handle}
+              onBack={goBackSmart}
+              onRequestExpand={handleRequestExpand}
+              onCardElementChange={registerCardElement}
+            />
+          ) : route.name === "search" ? (
+            <SearchPage
+              key={`search:${route.query}`}
+              query={route.query}
               onBack={goBackSmart}
               onRequestExpand={handleRequestExpand}
               onCardElementChange={registerCardElement}

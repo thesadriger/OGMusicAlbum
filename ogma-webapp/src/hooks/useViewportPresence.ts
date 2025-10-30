@@ -53,6 +53,11 @@ type ViewportMetrics = {
   offsetLeft: number;
 };
 
+type ScrollOffsets = {
+  scrollX: number;
+  scrollY: number;
+};
+
 const CLASSNAMES: PresenceClassNames = {
   base: "viewport-reveal",
   entered: "viewport-reveal--entered",
@@ -248,6 +253,7 @@ function isElementInViewport(element: Element, ratio: number, margin: string): b
 
   const rect = element.getBoundingClientRect();
   const viewport = getViewportMetrics();
+  const scroll = getScrollOffsets();
 
   if (viewport.height === 0 || viewport.width === 0) return true;
 
@@ -265,14 +271,16 @@ function isElementInViewport(element: Element, ratio: number, margin: string): b
     marginBottom,
     marginLeft,
     viewport.offsetTop,
-    viewport.offsetLeft
+    viewport.offsetLeft,
+    scroll
   );
 
-  return isVisibleByRectangles(domRectToRectLike(rect), viewportRect, ratio);
+  return isVisibleByRectangles(domRectToRectLike(rect, scroll, viewport), viewportRect, ratio);
 }
 
 function isEntryVisible(entry: IntersectionObserverEntry, ratio: number, margin: string): boolean {
   const viewport = getViewportMetrics();
+  const scroll = getScrollOffsets();
   const [marginTop, marginRight, marginBottom, marginLeft] = parseRootMargin(
     margin,
     viewport.width,
@@ -287,10 +295,15 @@ function isEntryVisible(entry: IntersectionObserverEntry, ratio: number, margin:
     marginBottom,
     marginLeft,
     viewport.offsetTop,
-    viewport.offsetLeft
+    viewport.offsetLeft,
+    scroll
   );
 
-  return isVisibleByRectangles(domRectToRectLike(entry.boundingClientRect), viewportRect, ratio);
+  return isVisibleByRectangles(
+    domRectToRectLike(entry.boundingClientRect, scroll, viewport),
+    viewportRect,
+    ratio
+  );
 }
 
 function getViewportMetrics(): ViewportMetrics {
@@ -348,10 +361,19 @@ function createViewportRect(
   marginBottom: number,
   marginLeft: number,
   offsetTop = 0,
-  offsetLeft = 0
+  offsetLeft = 0,
+  scrollOffsets?: ScrollOffsets
 ): RectLike {
+  let scrollX = scrollOffsets?.scrollX ?? 0;
+  let scrollY = scrollOffsets?.scrollY ?? 0;
+
   if (typeof window !== "undefined") {
-    const { scrollX, scrollY } = getScrollOffsets();
+    if (!scrollOffsets) {
+      const offsets = getScrollOffsets();
+      scrollX = offsets.scrollX;
+      scrollY = offsets.scrollY;
+    }
+
     const { width: docWidth, height: docHeight } = getDocumentDimensions();
 
     if (marginTop < 0) {
@@ -377,10 +399,10 @@ function createViewportRect(
     }
   }
 
-  const top = offsetTop - marginTop;
-  const left = offsetLeft - marginLeft;
-  const right = offsetLeft + viewportWidth + marginRight;
-  const bottom = offsetTop + viewportHeight + marginBottom;
+  const top = scrollY + offsetTop - marginTop;
+  const left = scrollX + offsetLeft - marginLeft;
+  const right = scrollX + offsetLeft + viewportWidth + marginRight;
+  const bottom = scrollY + offsetTop + viewportHeight + marginBottom;
 
   return {
     top,
@@ -392,12 +414,16 @@ function createViewportRect(
   };
 }
 
-function domRectToRectLike(rect: DOMRectReadOnly): RectLike {
+function domRectToRectLike(
+  rect: DOMRectReadOnly,
+  scroll: ScrollOffsets,
+  viewport: ViewportMetrics
+): RectLike {
   return {
-    top: rect.top,
-    right: rect.right,
-    bottom: rect.bottom,
-    left: rect.left,
+    top: rect.top + scroll.scrollY + viewport.offsetTop,
+    right: rect.right + scroll.scrollX + viewport.offsetLeft,
+    bottom: rect.bottom + scroll.scrollY + viewport.offsetTop,
+    left: rect.left + scroll.scrollX + viewport.offsetLeft,
     width: rect.width,
     height: rect.height,
   };
@@ -416,12 +442,13 @@ function getGlobalViewportRect(): RectLike {
   }
 
   const viewport = getViewportMetrics();
+  const { scrollX, scrollY } = getScrollOffsets();
 
   return {
-    top: viewport.offsetTop,
-    left: viewport.offsetLeft,
-    right: viewport.offsetLeft + viewport.width,
-    bottom: viewport.offsetTop + viewport.height,
+    top: scrollY + viewport.offsetTop,
+    left: scrollX + viewport.offsetLeft,
+    right: scrollX + viewport.offsetLeft + viewport.width,
+    bottom: scrollY + viewport.offsetTop + viewport.height,
     width: Math.max(0, viewport.width),
     height: Math.max(0, viewport.height),
   };
@@ -503,7 +530,7 @@ function parseMarginValue(value: string, size: number): number {
   return numeric;
 }
 
-function getScrollOffsets(): { scrollX: number; scrollY: number } {
+function getScrollOffsets(): ScrollOffsets {
   if (typeof window === "undefined") {
     return { scrollX: 0, scrollY: 0 };
   }

@@ -8,6 +8,7 @@ export type Route =
   | { name: "artists"; which: "ru" | "en" }
   | { name: "playlist" }                         // локальный (localStorage)
   | { name: "publicPlaylist"; handle: string }   // публичный по @handle
+  | { name: "search"; query: string }
   | { name: "profile" };
 
 function parse(hash: string): Route {
@@ -38,6 +39,17 @@ function parse(hash: string): Route {
     if (which === "ru" || which === "en") return { name: "artists", which };
   }
 
+  if (h.startsWith("/search")) {
+    let rawQuery = h.slice("/search".length);
+    if (rawQuery.startsWith("/")) rawQuery = rawQuery.slice(1);
+    let query = "";
+    if (rawQuery.startsWith("?")) {
+      const params = new URLSearchParams(rawQuery.slice(1));
+      query = params.get("q") ?? "";
+    }
+    return { name: "search", query };
+  }
+
   return { name: "home" };
 }
 
@@ -46,6 +58,13 @@ export function goArtist(name: string) { location.hash = `#/artist/${encodeURICo
 export function goArtists(which: "ru" | "en") { location.hash = `#/artists/${which}`; }
 export function goPlaylist() { location.hash = "#/playlist"; }
 export function goProfile() { location.hash = "#/profile"; }
+export function goSearch(query: string) {
+  const clean = (query || "").trim();
+  const params = new URLSearchParams();
+  if (clean) params.set("q", clean);
+  const suffix = params.toString();
+  location.hash = suffix ? `#/search?${suffix}` : "#/search";
+}
 
 export function goPublicPlaylist(handle: string) {
   const h = (handle || "").replace(/^@/, "");

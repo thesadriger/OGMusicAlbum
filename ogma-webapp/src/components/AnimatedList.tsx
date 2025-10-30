@@ -33,7 +33,7 @@ const AnimatedItem: React.FC<AnimatedItemProps> = ({
   className = "",
 }) => {
   const ref = useRef<HTMLDivElement>(null);
-  const inView = useInView(ref, { amount: 0.5, once: false });
+  const inView = useInView(ref, { amount: 0.2, once: false });
 
   return (
     <motion.div
@@ -67,7 +67,7 @@ interface AnimatedListProps {
 }
 
 const DEFAULT_DELAY = 0.05;
-const MAX_ANIMATION_DELAY = 0.6;
+const MAX_ANIMATION_DELAY = 0.18;
 
 const AnimatedList: React.FC<AnimatedListProps> = ({
   items,
@@ -179,7 +179,8 @@ const AnimatedList: React.FC<AnimatedListProps> = ({
         }
       >
         {items.map((item, index) => {
-          const delay = Math.min(baseDelay * index, MAX_ANIMATION_DELAY);
+          const effectiveIndex = Math.min(index, 6);
+          const delay = Math.min(baseDelay * effectiveIndex, MAX_ANIMATION_DELAY);
           return (
             <AnimatedItem
               key={item.key}
